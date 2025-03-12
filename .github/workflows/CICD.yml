@@ -105,10 +105,7 @@ jobs:
 
           # Tag and push the image to ECR
           docker tag demo-crm:$VERSION $ECR_URI:$VERSION
-          docker tag demo-crm:latest $ECR_URI:latest
-
           docker push $ECR_URI:$VERSION
-          docker push $ECR_URI:latest
 
       - name: Update kubeconfig for EKS Cluster
         run: |
