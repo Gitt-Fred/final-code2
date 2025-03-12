@@ -11,7 +11,6 @@ jobs:
   build:
     runs-on: ubuntu-latest  # Specifies the GitHub-hosted runner OS
 
-    # Load environment variables from GitHub secrets
     env:
       MONGO_NAME: ${{ secrets.MONGO_NAME }}
       MONGO_PASS: ${{ secrets.MONGO_PASS }}
@@ -22,44 +21,47 @@ jobs:
       RABBITMQ_URI: ${{ secrets.RABBITMQ_URI }}
 
     steps:
-      #Checkout repository code so the workflow can access it
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      #Setup Node.js environment
       - name: Setup Node.js
         uses: actions/setup-node@v4
 
-      #Install project dependencies from package.json
       - name: Install Dependencies
         run: npm install
 
-      #Start the web server in the background and stop it after 20 seconds
-      - name: Start Web Server (Auto-Stop After 20s)
+      - name: Start Web Server (Auto-Stop After 15s)
         run: timeout 15s npm run dev || true
 
-        #Generates semantic version using github tags 
       - name: Generate Semantic Version
         id: semver
         run: |
-          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.1.0")  # Get latest Git tag or default to 0.1.0
+          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.1.0")
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-      #Build Docker Image with Semantic Version Tag
       - name: Build Docker Image
         run: |
           docker build -t demo-crm:$VERSION -t demo-crm:latest .
 
-      - name: Start Services with Docker Compose
-      #preforms e2e testing before moving to cloud. Curl to ensure api runs properly.
-      # starts with docker compose down to ensure clean env
+      - name: Start Services and Perform E2E Testing
+       # Export environment variables before starting Docker services
         run: |
-          docker compose down -v  
-          docker compose up -d  
+          docker-compose down -v  
+          export MONGO_NAME="$MONGO_NAME"
+          export MONGO_PASS="$MONGO_PASS"
+          export MONGO_DB="$MONGO_DB"
+          export MONGODB_URI="$MONGODB_URI"
+          export LOG_LEVEL="$LOG_LEVEL"
+          export PERSISTENCE="$PERSISTENCE"
+          export RABBITMQ_URI="$RABBITMQ_URI"
+
+          docker-compose up -d  
           sleep 10  # Wait for services to be ready
-          curl localhost:3000
+
+          # Check if the CRM API is running
+          curl --fail --retry 5 --retry-delay 5 http://localhost:3000
+
           sleep 5
-          curl localhost:3000
-          docker compose down -v
-          
-         
+          curl --fail --retry 5 --retry-delay 5 http://localhost:3000
+
+          docker-compose down -v
