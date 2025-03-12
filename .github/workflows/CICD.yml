@@ -44,9 +44,10 @@ jobs:
           docker build -t demo-crm:$VERSION -t demo-crm:latest .
 
       - name: Start Services and Perform E2E Testing
-       # Export environment variables before starting Docker services
+        # Export environment variables before starting Docker services
         run: |
           docker compose down -v  
+
           export MONGO_NAME="$MONGO_NAME"
           export MONGO_PASS="$MONGO_PASS"
           export MONGO_DB="$MONGO_DB"
@@ -56,12 +57,22 @@ jobs:
           export RABBITMQ_URI="$RABBITMQ_URI"
 
           docker compose up -d  
-          sleep 10  # Wait for services to be ready
+          sleep 10
 
-          # Check if the CRM API is running
           curl --fail --retry 5 --retry-delay 5 http://localhost:3000
 
           sleep 5
           curl --fail --retry 5 --retry-delay 5 http://localhost:3000
 
           docker compose down -v
+
+      - name: Checkout Repository (Again)
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4.1.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1  # Change this to your desired AWS region
+       
