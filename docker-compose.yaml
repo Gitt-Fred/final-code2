@@ -1,0 +1,47 @@
+services:
+  mongodb:
+    image: mongo:6.0
+    container_name: mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_NAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASS}
+      MONGO_INITDB_DATABASE: ${MONGO_DB}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js
+    networks:
+      - app_network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh mongodb://${MONGO_NAME}:${MONGO_PASS}@localhost:27017/admin --quiet
+      interval: 10s
+      retries: 5
+      start_period: 5s
+      timeout: 5s
+
+  app:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    container_name: nextjs_app
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      MONGODB_URI: mongodb://${MONGO_NAME}:${MONGO_PASS}@mongodb:27017/${MONGO_DB}?authSource=admin
+      RABBITMQ_URI: ${RABBITMQ_URI}
+      LOG_LEVEL: ${LOG_LEVEL}
+      PERSISTENCE: "true"
+    ports:
+      - "3000:3000"
+    networks:
+      - app_network
+
+volumes:
+  mongodb_data:
+    driver: local
+
+networks:
+  app_network:
+    driver: bridge
