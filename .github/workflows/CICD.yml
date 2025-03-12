@@ -40,7 +40,7 @@ jobs:
         run: |
          npm install
          sleep 5
-          npm test
+          npx jest
           sleep 5
           curl localhost:3000
           
