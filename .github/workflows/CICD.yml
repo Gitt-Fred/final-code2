@@ -34,8 +34,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Use Node.js
         uses: actions/setup-node@v4
-      - run: npm ci
-      - run: npm run build --if-present
+      - run: npm install
+      - run: npm run dev
       - run: npm test
       #installs dependencies and runs unit tests
 
