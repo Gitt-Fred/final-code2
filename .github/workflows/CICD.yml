@@ -30,9 +30,9 @@ jobs:
         uses: actions/setup-node@v4.2.0
       - name: Run unit tests
         run: |
-         npm run dev
+         npm install
          sleep 5
-          curl localhost:3000
+          npm test
           sleep 5
           curl localhost:3000
           
