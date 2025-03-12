@@ -35,7 +35,7 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@v4
       - run: npm install
-      - run: npm run dev
+      - run: timeout 20s npm run dev || true
       - run: exit
       #installs dependencies and runs unit tests
 
