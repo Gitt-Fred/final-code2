@@ -38,7 +38,6 @@ jobs:
         run: |
           VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.1.0")
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-
       - name: Build Docker Image
         run: |
           docker build -t demo-crm:$VERSION -t demo-crm:latest .
@@ -52,14 +51,12 @@ jobs:
           export MONGODB_URI="$MONGODB_URI"
           export LOG_LEVEL="$LOG_LEVEL"
           export PERSISTENCE="$PERSISTENCE"
-          export RABBITMQ_URI="$RABBITMQ_URI"
-
-         
+          export RABBITMQ_URI="$RABBITMQ_URI"         
           docker compose up -d  
-          sleep 10
+          sleep 10        
           curl --fail --retry 5 --retry-delay 5 http://localhost:3000
           sleep 5
-          curl --fail --retry 5 --retry-delay 5 http://localhost:3000
+          curl --fail --retry 5 --retry-delay 5 http://localhost:3000          
           docker compose down -v
 
       - name: Checkout Repository (Again)
@@ -75,12 +72,22 @@ jobs:
       - name: Authenticate with ECR and Push Docker Image
         run: |
           aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 713881823524.dkr.ecr.ap-south-1.amazonaws.com
-          IMAGE_URI="713881823524.dkr.ecr.ap-south-1.amazonaws.com/kubernetes/final_project"
-          docker tag demo-crm:$VERSION $IMAGE_URI:$VERSION
-          docker tag demo-crm:latest $IMAGE_URI:latest
-          docker push $IMAGE_URI:$VERSION
-          docker push $IMAGE_URI:latest
+          ECR_URI="713881823524.dkr.ecr.ap-south-1.amazonaws.com/kubernetes/final_project"     
+          docker tag demo-crm:$VERSION $ECR_URI:$VERSION
+          docker tag demo-crm:latest $ECR_URI:latest
+          docker push $ECR_URI:$VERSION
+          docker push $ECR_URI:latest
+      - name: Update kubeconfig for EKS Cluster
+        run: |
+          aws eks update-kubeconfig --region ap-south-1 --name Fred-cluster  # Change 'Fred-cluster' to your cluster name
+      - name: Perform Rolling Update on demo-crm Deployment
+        # Performs rolling update and pulls the newly versioned image
+        run: |
+          IMAGE_URI="713881823524.dkr.ecr.ap-south-1.amazonaws.com/kubernetes/final_project:$VERSION"
+          kubectl set image deployment/demo-deployment demo=$IMAGE_URI -n default  # Change namespace if needed
+          kubectl rollout status deployment/demo-deployment -n default
+          kubectl get pods -n default
 
-          
+
           
        
