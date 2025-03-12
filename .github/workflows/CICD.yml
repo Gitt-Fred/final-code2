@@ -1,24 +1,17 @@
-# This is a basic workflow to help you get started with Actions
+name: CI  # Workflow name
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "master" branch
   push:
-    branches: [ "master" ]
+    branches: [ "master" ]  # Trigger on pushes to the master branch
   pull_request:
-    branches: [ "master" ]
+    branches: [ "master" ]  # Trigger on pull requests targeting master
+  workflow_dispatch:  # Allows manual execution of the workflow
 
-  # Allows you to run this workflow manually from the Actions tab
-  workflow_dispatch:
-
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
   build:
-    # The type of runner that the job will run on
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # Specifies the GitHub-hosted runner OS
+
+    # Load environment variables from GitHub secrets
     env:
       MONGO_NAME: ${{ secrets.MONGO_NAME }}
       MONGO_PASS: ${{ secrets.MONGO_PASS }}
@@ -28,19 +21,41 @@ jobs:
       PERSISTENCE: ${{ secrets.PERSISTENCE }}
       RABBITMQ_URI: ${{ secrets.RABBITMQ_URI }}
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
-      - name: Use Node.js
-        uses: actions/setup-node@v4
-      - run: npm install
-      - run: timeout 20s npm run dev || true
-      - run: exit
-      #installs dependencies and runs unit tests
+      #Checkout repository code so the workflow can access it
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      #Setup Node.js environment
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+
+      #Install project dependencies from package.json
+      - name: Install Dependencies
+        run: npm install
+
+      #Start the web server in the background and stop it after 20 seconds
+      - name: Start Web Server (Auto-Stop After 20s)
+        run: timeout 15s npm run dev || true
+
+        #Generates semantic version using github tags 
+      - name: Generate Semantic Version
+        id: semver
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.1.0")  # Get latest Git tag or default to 0.1.0
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      #Build Docker Image with Semantic Version Tag
+      - name: Build Docker Image
+        run: |
+          docker build -t demo-crm:$VERSION -t demo-crm:latest .
+
+      - name: Start Services with Docker Compose
+        run: |
+          docker-compose down -v  # Ensure a clean start
+          docker-compose up -d  # Start services in detached mode
+          sleep 10  # Wait for services to be ready
+          curl localhost:3000
+          sleep 5
+          curl localhost:3000
+         
