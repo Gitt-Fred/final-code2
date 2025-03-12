@@ -51,11 +51,15 @@ jobs:
           docker build -t demo-crm:$VERSION -t demo-crm:latest .
 
       - name: Start Services with Docker Compose
+      #preforms e2e testing before moving to cloud. Curl to ensure api runs properly.
+      # starts with docker compose down to ensure clean env
         run: |
-          docker-compose down -v  # Ensure a clean start
-          docker-compose up -d  # Start services in detached mode
+          docker compose down -v  
+          docker compose up -d  
           sleep 10  # Wait for services to be ready
           curl localhost:3000
           sleep 5
           curl localhost:3000
+          docker compose down -v
+          
          
