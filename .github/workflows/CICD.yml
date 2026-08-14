@@ -8,13 +8,15 @@ on:
   workflow_dispatch:  # Allows manual execution of the workflow
 
 jobs:
-  build:
+  build-test:
     runs-on: ubuntu-latest  # Specifies the GitHub-hosted runner OS
 
     env:
       MONGO_NAME: ${{ secrets.MONGO_NAME }}
       MONGO_PASS: ${{ secrets.MONGO_PASS }}
       MONGO_DB: ${{ secrets.MONGO_DB }}
+      MONGO_APP_USERNAME: ${{ secrets.MONGO_APP_USERNAME }}
+      MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
       MONGODB_URI: ${{ secrets.MONGODB_URI }}
       LOG_LEVEL: ${{ secrets.LOG_LEVEL }}
       PERSISTENCE: ${{ secrets.PERSISTENCE }}
@@ -32,6 +34,58 @@ jobs:
 
       - name: Start Web Server (Auto-Stop After 15s)
         run: timeout 15s npm run dev || true
+
+      - name: Build Docker Image
+        run: docker build -t demo-crm:ci .
+
+      - name: Start Services and Perform E2E Testing
+        run: |
+          # Ensure a clean environment before starting
+          docker compose down -v
+
+          # Export environment variables before starting Docker services
+          export MONGO_NAME="$MONGO_NAME"
+          export MONGO_PASS="$MONGO_PASS"
+          export MONGO_DB="$MONGO_DB"
+          export MONGO_APP_USERNAME="$MONGO_APP_USERNAME"
+          export MONGO_APP_PASSWORD="$MONGO_APP_PASSWORD"
+          export MONGODB_URI="$MONGODB_URI"
+          export LOG_LEVEL="$LOG_LEVEL"
+          export PERSISTENCE="$PERSISTENCE"
+          export RABBITMQ_URI="$RABBITMQ_URI"
+
+          # Start Docker Compose services
+          docker compose up -d
+          sleep 10
+
+          # Check if API is running
+          curl --fail --retry 5 --retry-delay 5 http://localhost:3000
+
+          sleep 5
+          curl --fail --retry 5 --retry-delay 5 http://localhost:3000
+
+          # Stop and clean up Docker Compose services
+          docker compose down -v
+
+  deploy:
+    needs: build-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+
+    env:
+      MONGO_NAME: ${{ secrets.MONGO_NAME }}
+      MONGO_PASS: ${{ secrets.MONGO_PASS }}
+      MONGO_DB: ${{ secrets.MONGO_DB }}
+      MONGO_APP_USERNAME: ${{ secrets.MONGO_APP_USERNAME }}
+      MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      LOG_LEVEL: ${{ secrets.LOG_LEVEL }}
+      PERSISTENCE: ${{ secrets.PERSISTENCE }}
+      RABBITMQ_URI: ${{ secrets.RABBITMQ_URI }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
       - name: Generate Semantic Version
         id: semver
@@ -60,36 +114,6 @@ jobs:
       - name: Build Docker Image
         run: |
           docker build -t demo-crm:$VERSION -t demo-crm:latest .
-
-      - name: Start Services and Perform E2E Testing
-        run: |
-          # Ensure a clean environment before starting
-          docker compose down -v  
-
-          # Export environment variables before starting Docker services
-          export MONGO_NAME="$MONGO_NAME"
-          export MONGO_PASS="$MONGO_PASS"
-          export MONGO_DB="$MONGO_DB"
-          export MONGODB_URI="$MONGODB_URI"
-          export LOG_LEVEL="$LOG_LEVEL"
-          export PERSISTENCE="$PERSISTENCE"
-          export RABBITMQ_URI="$RABBITMQ_URI"
-
-          # Start Docker Compose services
-          docker compose up -d  
-          sleep 10
-
-          # Check if API is running
-          curl --fail --retry 5 --retry-delay 5 http://localhost:3000
-
-          sleep 5
-          curl --fail --retry 5 --retry-delay 5 http://localhost:3000
-
-          # Stop and clean up Docker Compose services
-          docker compose down -v
-
-      - name: Checkout Repository (Again)
-        uses: actions/checkout@v4
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4.1.0
@@ -123,7 +147,3 @@ jobs:
 
           # Ensure all pods are updated
           kubectl get pods -n default
-
-
-          
-       

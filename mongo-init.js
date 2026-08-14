@@ -1,7 +1,11 @@
-db = db.getSiblingDB("mydatabase");  // Switch to "mydatabase"
+const dbName = process.env.MONGO_INITDB_DATABASE || "mydatabase";
 
-db.createCollection("users");  // Create an empty "users" collection
+db = db.getSiblingDB(dbName);
 
-db.users.insertOne({ name: "Admin User", email: "admin@example.com" });  // Insert sample data
+db.createUser({
+  user: process.env.MONGO_APP_USERNAME,
+  pwd: process.env.MONGO_APP_PASSWORD,
+  roles: [{ role: "readWrite", db: dbName }],
+});
 
-print("Database and collection initialized successfully!");
+print("Application database user created successfully!");
