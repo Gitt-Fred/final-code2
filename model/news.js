@@ -10,4 +10,4 @@ const NewsSchema = new mongoose.Schema({
   }
 })
 
-module.exports = mongoose.models.News || mongoose.model('News', NewsSchema)
+export default mongoose.models.News || mongoose.model('News', NewsSchema)
