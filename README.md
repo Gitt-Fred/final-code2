@@ -1,6 +1,6 @@
 # Demo CRM
 
-A small Next.js + MongoDB + RabbitMQ demo CRM app. Creating a client publishes a message to a `clients` queue in RabbitMQ.
+A small Next.js + MongoDB + RabbitMQ demo CRM app. Creating a client publishes a message to a `clients` queue in RabbitMQ — see [docs/RABBITMQ.md](docs/RABBITMQ.md) for why and how.
 
 ## Prerequisites
 
