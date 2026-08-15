@@ -1,6 +1,6 @@
 # Demo CRM
 
-A small Next.js + MongoDB demo CRM app (RabbitMQ integration is currently stubbed out/unused).
+A small Next.js + MongoDB + RabbitMQ demo CRM app. Creating a client publishes a message to a `clients` queue in RabbitMQ.
 
 ## Prerequisites
 
@@ -20,7 +20,8 @@ cp .env.local.example .env
 | `MONGO_NAME` / `MONGO_PASS` / `MONGO_DB` | MongoDB root credentials and database name, used only to initialize the container |
 | `MONGO_APP_USERNAME` / `MONGO_APP_PASSWORD` | Scoped, least-privilege database user the app actually connects as. Created automatically by [mongo-init.js](mongo-init.js) on first boot — the app never authenticates as root |
 | `MONGODB_URI` | Full Mongo connection string, used when running the app outside Docker Compose |
-| `RABBITMQ_URI` | Currently unused — the queue integration is stubbed out |
+| `RABBITMQ_URI` | Full RabbitMQ connection string, used when running the app outside Docker Compose |
+| `RABBITMQ_USER` / `RABBITMQ_PASS` | RabbitMQ broker credentials, used to configure the `rabbitmq` container |
 | `LOG_LEVEL` | pino log level |
 | `PERSISTENCE` | Set to `"true"` to read/write MongoDB; unset/false serves static in-memory sample data instead |
 
@@ -32,9 +33,9 @@ cp .env.local.example .env
 docker compose up -d
 ```
 
-This builds the app image, starts MongoDB, runs `mongo-init.js` to create the scoped app database user, and serves the app at http://localhost:3000.
+This builds the app image, starts MongoDB and RabbitMQ, runs `mongo-init.js` to create the scoped app database user, and serves the app at http://localhost:3000.
 
-MongoDB's port is published to `127.0.0.1:27017` only (loopback, not the whole network) — point a local GUI client (e.g. MongoDB Compass) at `localhost:27017` if you need to inspect the database directly.
+Both MongoDB's and RabbitMQ's ports are published to loopback only (`127.0.0.1:27017` and `127.0.0.1:5672`/`127.0.0.1:15672`), not the whole network. Use a local GUI client (e.g. MongoDB Compass) at `localhost:27017` to inspect the database, or the RabbitMQ management UI at [http://localhost:15672](http://localhost:15672) (login with `RABBITMQ_USER`/`RABBITMQ_PASS`) to inspect the `clients` queue.
 
 Tear down with:
 
