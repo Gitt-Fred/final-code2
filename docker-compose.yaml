@@ -55,11 +55,25 @@ services:
       MONGODB_URI: mongodb://${MONGO_APP_USERNAME}:${MONGO_APP_PASSWORD}@mongodb:27017/${MONGO_DB}?authSource=${MONGO_DB}
       RABBITMQ_URI: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
       LOG_LEVEL: ${LOG_LEVEL}
-      PERSISTENCE: "true"
+      # Session cookies are only marked Secure when this is true. Plain-HTTP local use
+      # needs false; set it to true (and APP_ORIGIN) once you serve the app over HTTPS.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      APP_ORIGIN: ${APP_ORIGIN:-}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
     ports:
       - "3000:3000"
     networks:
       - app_network
+    # Hardening: the app needs no extra privileges and writes nothing to its own filesystem.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 512m
+    pids_limit: 200
 
 volumes:
   mongodb_data:
