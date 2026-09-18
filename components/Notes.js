@@ -5,7 +5,7 @@ import { formatDate } from '../lib/format'
 import useApi from '../lib/useApi'
 import { useToast } from './Toast'
 
-export default function Notes({ clientId }) {
+export default function Notes({ clientId, currentUser }) {
   const toast = useToast()
   const { data, error, reload } = useApi(`/api/clients/${clientId}/notes`)
   const [text, setText] = useState('')
@@ -78,22 +78,31 @@ export default function Notes({ clientId }) {
         <p className="text-base-content/70">No notes yet.</p>
       ) : (
         <ul className="space-y-3">
-          {notes.map((note) => (
-            <li key={note._id} className="rounded-lg bg-base-200 p-4">
-              <p className="whitespace-pre-wrap break-words">{note.text}</p>
-              <div className="mt-2 flex items-center justify-between text-xs text-base-content/60">
-                <span>{formatDate(note.createdAt)}</span>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-xs"
-                  onClick={() => deleteNote(note._id)}
-                  aria-label="Delete note"
-                >
-                  <TrashIcon className="h-4 w-4" />
-                </button>
-              </div>
-            </li>
-          ))}
+          {notes.map((note) => {
+            // The API enforces this too: authors delete their own notes, admins any.
+            const canDelete = currentUser.role === 'admin' || note.createdBy?._id === currentUser.id
+            return (
+              <li key={note._id} className="rounded-lg bg-base-200 p-4">
+                <p className="whitespace-pre-wrap break-words">{note.text}</p>
+                <div className="mt-2 flex items-center justify-between text-xs text-base-content/60">
+                  <span>
+                    {note.createdBy?.name ? `${note.createdBy.name} · ` : ''}
+                    {formatDate(note.createdAt)}
+                  </span>
+                  {canDelete ? (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs"
+                      onClick={() => deleteNote(note._id)}
+                      aria-label="Delete note"
+                    >
+                      <TrashIcon className="h-4 w-4" />
+                    </button>
+                  ) : null}
+                </div>
+              </li>
+            )
+          })}
         </ul>
       )}
     </section>

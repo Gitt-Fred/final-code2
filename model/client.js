@@ -32,6 +32,8 @@ const ClientSchema = new mongoose.Schema(
       },
       match: [/^https?:\/\/\S+$/i, 'Website is invalid'],
     },
+    // Absent on customers created before authentication existed.
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
 )

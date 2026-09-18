@@ -14,6 +14,8 @@ const NoteSchema = new mongoose.Schema(
       trim: true,
       maxlength: [2000, 'Note is too long (2000 characters max)'],
     },
+    // Absent on notes created before authentication existed (admin-only to delete).
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 )

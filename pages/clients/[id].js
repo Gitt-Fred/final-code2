@@ -17,8 +17,13 @@ import Modal from '../../components/Modal'
 import Notes from '../../components/Notes'
 import { useToast } from '../../components/Toast'
 import { api } from '../../lib/api'
+import { requireUserSSR } from '../../lib/auth'
 import { safeUrl } from '../../lib/format'
 import useApi from '../../lib/useApi'
+
+export async function getServerSideProps(context) {
+  return requireUserSSR(context)
+}
 
 function BackLink() {
   return (
@@ -29,7 +34,7 @@ function BackLink() {
   )
 }
 
-export default function ClientDetail() {
+export default function ClientDetail({ user }) {
   const router = useRouter()
   const toast = useToast()
   const { id } = router.query
@@ -108,6 +113,9 @@ export default function ClientDetail() {
                   </li>
                 ) : null}
               </ul>
+              {client.createdBy?.name ? (
+                <p className="mt-3 text-xs text-base-content/50">Added by {client.createdBy.name}</p>
+              ) : null}
             </div>
           </div>
           <div className="flex gap-2">
@@ -115,16 +123,19 @@ export default function ClientDetail() {
               <PencilIcon className="mr-1 h-4 w-4" />
               Edit
             </button>
-            <button type="button" className="btn btn-outline btn-error btn-sm" onClick={() => setDeleting(true)}>
-              <TrashIcon className="mr-1 h-4 w-4" />
-              Delete
-            </button>
+            {/* Hidden for members as a courtesy; the API enforces admin-only delete. */}
+            {user.role === 'admin' ? (
+              <button type="button" className="btn btn-outline btn-error btn-sm" onClick={() => setDeleting(true)}>
+                <TrashIcon className="mr-1 h-4 w-4" />
+                Delete
+              </button>
+            ) : null}
           </div>
         </section>
 
         <div className="grid gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2">
-            <Notes clientId={client._id} />
+            <Notes clientId={client._id} currentUser={user} />
           </div>
           <ClientNews company={client.company} articles={client.articles} />
         </div>
@@ -161,7 +172,7 @@ export default function ClientDetail() {
   }
 
   return (
-    <Layout title={client?.name || 'Customer'}>
+    <Layout title={client?.name || 'Customer'} user={user}>
       <BackLink />
       {content}
     </Layout>

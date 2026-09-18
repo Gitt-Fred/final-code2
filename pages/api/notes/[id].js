@@ -1,32 +1,25 @@
-import dbConnect from '../../../lib/mong-connect'
 import Note from '../../../model/note.js'
-import {
-  isObjectId,
-  methodNotAllowed,
-  notFound,
-  persistenceDisabled,
-  persistenceEnabled,
-  sendError,
-} from '../../../lib/api-helpers'
+import { withAuth } from '../../../lib/auth'
+import { isObjectId, notFound } from '../../../lib/api-helpers'
 
-export default async function handler(req, res) {
+export const config = { api: { bodyParser: { sizeLimit: '10kb' } } }
+
+// Members can delete their own notes; admins can delete any. Notes from before
+// accounts existed have no author, so only an admin can remove them.
+async function deleteNote(req, res, { user }) {
   const { id } = req.query
+  if (!isObjectId(id)) return notFound(res)
 
-  if (!isObjectId(id)) {
-    return notFound(res)
-  }
-  if (req.method !== 'DELETE') {
-    return methodNotAllowed(req, res, ['DELETE'])
-  }
-  if (!persistenceEnabled()) {
-    return persistenceDisabled(res)
+  const note = await Note.findById(id).lean()
+  if (!note) return notFound(res)
+
+  const isAuthor = note.createdBy && String(note.createdBy) === String(user._id)
+  if (user.role !== 'admin' && !isAuthor) {
+    return res.status(403).json({ success: false, error: 'Forbidden' })
   }
 
-  try {
-    await dbConnect()
-    const deleted = await Note.findByIdAndDelete(id)
-    return deleted ? res.status(200).json({ success: true, data: {} }) : notFound(res)
-  } catch (error) {
-    return sendError(res, error)
-  }
+  await Note.deleteOne({ _id: id })
+  return res.status(200).json({ success: true, data: {} })
 }
+
+export default withAuth({ DELETE: { handler: deleteNote } })

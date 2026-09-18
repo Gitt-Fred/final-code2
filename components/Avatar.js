@@ -11,6 +11,7 @@ const palette = [
 ]
 
 const sizes = {
+  sm: 'h-8 w-8 text-sm',
   md: 'h-12 w-12 text-lg',
   lg: 'h-20 w-20 text-3xl',
 }
