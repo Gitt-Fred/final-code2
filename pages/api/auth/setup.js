@@ -42,6 +42,10 @@ async function setup(req, res, { ip }) {
   // Build indexes first, then take the lock. Inserting this fixed-id document is
   // atomic, so of two simultaneous requests only one gets past this point.
   await User.init()
+  // No users exist, so a lock left over from a crashed attempt (or from deleting the
+  // users to recover access) would block setup forever. A fresh lock still means
+  // another request is mid-setup, so only clear one that is over a minute old.
+  await Setup.deleteOne({ _id: 'setup', createdAt: { $lt: new Date(Date.now() - 60 * 1000) } })
   try {
     await Setup.create({ _id: 'setup' })
   } catch (error) {
