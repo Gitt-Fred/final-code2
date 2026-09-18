@@ -1,65 +1,85 @@
 import dbConnect from "../../lib/mong-connect";
 import writeMessageToQueue from "../../lib/rabbitmq"
 import Client from '../../model/client.js'
+import {
+  escapeRegex,
+  methodNotAllowed,
+  parsePagination,
+  persistenceDisabled,
+  persistenceEnabled,
+  pickClientFields,
+  sampleClients,
+  sendError,
+} from '../../lib/api-helpers'
 
 export default async function handler(req, res) {
-  const { method } = req
+  const persistent = persistenceEnabled()
 
-  if (process.env.PERSISTENCE) {
-    await dbConnect()
-  }
+  try {
+    if (persistent) {
+      await dbConnect()
+    }
 
-  switch (method) {
-    case 'GET':
-      try {
-        let clients = []
-        if (process.env.PERSISTENCE) {
-          // clients = await Client.find({})
-          clients = await Client.aggregate([{
-            $lookup: {
-              from: "news",
-              localField: "company",
-              foreignField: "company",
-              as: "articles"
-            }
-          }])
+    switch (req.method) {
+      case 'GET': {
+        const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
+        const { page, limit } = parsePagination(req.query)
+        let data
+        let total
+
+        if (persistent) {
+          const filter = q
+            ? {
+                $or: ['name', 'company', 'email'].map((field) => ({
+                  [field]: { $regex: escapeRegex(q), $options: 'i' },
+                })),
+              }
+            : {}
+          ;[data, total] = await Promise.all([
+            Client.find(filter)
+              .sort({ createdAt: -1, _id: -1 })
+              .skip((page - 1) * limit)
+              .limit(limit)
+              .lean(),
+            Client.countDocuments(filter),
+          ])
         } else {
-          clients = [
-            {
-              "_id": "6224b7351a1c6bc7727bcfbe",
-              "name": "John Doe",
-              "email": "john@doe.com",
-              "company": "Doe",
-              "website": "https://doe.com",
-            },
-            {
-              "_id": "62s457371a8a6bc7727bcfbe",
-              "name": "Omri",
-              "email": "omri@develeap.com",
-              "company": "Develeap",
-              "website": "https://develeap.com",
-            }
-          ]
+          const needle = q.toLowerCase()
+          const matches = sampleClients.filter(
+            (client) =>
+              !needle ||
+              [client.name, client.company, client.email].some((value) =>
+                value.toLowerCase().includes(needle)
+              )
+          )
+          total = matches.length
+          data = matches.slice((page - 1) * limit, page * limit)
         }
-        res.status(200).json({ success: true, data: clients })
-      } catch (error) {
-        res.status(400).json({ success: false })
+
+        return res.status(200).json({
+          success: true,
+          data,
+          total,
+          page,
+          pages: Math.max(Math.ceil(total / limit), 1),
+        })
       }
-      break
-    case 'POST':
-      try {
-        const client = await Client.create(req.body)
-        console.log("about to write to queue. already in mongodb")
-        if (req.body.company) {
-          const writeToQueue = await writeMessageToQueue(req.body.company);
+      case 'POST': {
+        if (!persistent) {
+          return persistenceDisabled(res)
         }
-        res.status(201).json({ success: true, data: client })
-      } catch (error) {
-        res.status(400).json({ success: error })
+        const client = await Client.create(pickClientFields(req.body))
+        // Best effort: writeMessageToQueue never throws, so a broker outage
+        // can't fail a client that is already saved.
+        if (client.company) {
+          await writeMessageToQueue(client.company)
+        }
+        return res.status(201).json({ success: true, data: client })
       }
-      break
-    default:
-      res.status(400).json({ success: false })
-      break
+      default:
+        return methodNotAllowed(req, res, ['GET', 'POST'])
+    }
+  } catch (error) {
+    return sendError(res, error)
   }
 }

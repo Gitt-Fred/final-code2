@@ -2,6 +2,24 @@
 
 A small Next.js + MongoDB + RabbitMQ demo CRM app. Creating a client publishes a message to a `clients` queue in RabbitMQ — see [docs/RABBITMQ.md](docs/RABBITMQ.md) for why and how.
 
+## Features
+
+- **Customers**: add, edit, and delete customers; search by name, company, or email; paginated list.
+- **Customer page** (`/clients/[id]`): profile, per-customer notes, and the latest news matched to their company.
+- **UI**: Tailwind + daisyUI + Headless UI, with a light/dark theme toggle (follows your OS setting until you pick one), loading skeletons, empty and error states, and toast feedback.
+
+### API
+
+| Route | Methods | Notes |
+| --- | --- | --- |
+| `/api/clients` | `GET`, `POST` | `GET` accepts `q`, `page`, `limit` (max 50) and returns `{ data, total, page, pages }` |
+| `/api/clients/[id]` | `GET`, `PUT`, `DELETE` | `GET` includes the company's news `articles`; `DELETE` also removes the customer's notes |
+| `/api/clients/[id]/notes` | `GET`, `POST` | Notes are stored in their own `notes` collection |
+| `/api/notes/[id]` | `DELETE` | |
+| `/api/news?company=` | `GET` | |
+
+Validation errors come back as `400 { success: false, error }`.
+
 ## Prerequisites
 
 - [Docker Desktop](https://docs.docker.com/get-docker/) — includes Docker Compose and Buildx
@@ -23,7 +41,7 @@ cp .env.local.example .env
 | `RABBITMQ_URI` | Full RabbitMQ connection string, used when running the app outside Docker Compose |
 | `RABBITMQ_USER` / `RABBITMQ_PASS` | RabbitMQ broker credentials, used to configure the `rabbitmq` container |
 | `LOG_LEVEL` | pino log level |
-| `PERSISTENCE` | Set to `"true"` to read/write MongoDB; unset/false serves static in-memory sample data instead |
+| `PERSISTENCE` | Set to exactly `true` to read/write MongoDB. Any other value (or unset) serves read-only sample data and rejects writes with a 503 |
 
 `.env` / `.env.local` are gitignored — never commit real credentials.
 
@@ -57,9 +75,20 @@ docker build -t demo-crm .
 docker run -p 3000:3000 demo-crm
 ```
 
-## CI/CD
+## Linting
 
-[.github/workflows/CICD.yml](.github/workflows/CICD.yml) runs two jobs:
+```bash
+npm run lint
+```
 
-- **`build-test`** — runs on every push and pull request targeting `master`: installs dependencies, builds the Docker image, and runs an end-to-end smoke test via Docker Compose.
-- **`deploy`** — only runs on a `push` to `master`, never on pull requests: tags a new semantic version, pushes the image to ECR, and rolls out the update to the EKS cluster.
+Runs ESLint (flat config in [eslint.config.mjs](eslint.config.mjs), based on `eslint-config-next/core-web-vitals`) and fails on any warning. Note that `next lint` no longer exists in Next.js 16, so this calls ESLint directly.
+
+## CI
+
+[.github/workflows/CICD.yml](.github/workflows/CICD.yml) has a single `build-test` job, run on every push and pull request targeting `master`:
+
+1. Installs dependencies and runs `npm run lint` (fails the build on any lint warning or error).
+2. Builds the Docker image with layer caching.
+3. Starts the Compose stack and smoke-tests `http://localhost:3000`.
+
+There is currently no deploy job.
