@@ -2,7 +2,7 @@
 
 A small customer-relationship-management app built with **Next.js**, **MongoDB**, and **RabbitMQ**, packaged to run with a single `docker compose up`.
 
-You can add, search, edit, and delete customers, keep notes against each one, and see news matched to their company. Whenever a customer is created, the app publishes a message to a RabbitMQ queue so other services can react to it later.
+Sign in with your own account, then add, search, edit, and delete customers, keep notes against each one, and see news matched to their company. Whenever a customer is created, the app publishes a message to a RabbitMQ queue so other services can react to it later. Access is controlled by roles (admin and member), and the app is hardened against the common web attacks; see [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Table of contents
 
@@ -16,14 +16,16 @@ You can add, search, edit, and delete customers, keep notes against each one, an
   - [Option A: Docker Compose (recommended)](#option-a-docker-compose-recommended)
   - [Option B: Next.js on your host, dependencies in Docker](#option-b-nextjs-on-your-host-dependencies-in-docker)
   - [Option C: The app image on its own](#option-c-the-app-image-on-its-own)
+- [Accounts and roles](#accounts-and-roles)
 - [Using the app](#using-the-app)
 - [API reference](#api-reference)
 - [Data model](#data-model)
 - [RabbitMQ](#rabbitmq)
+- [Security](#security)
 - [Project structure](#project-structure)
 - [Development](#development)
+- [Testing](#testing)
 - [CI](#ci)
-- [Security notes](#security-notes)
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
 - [Further reading](#further-reading)
@@ -32,29 +34,30 @@ You can add, search, edit, and delete customers, keep notes against each one, an
 
 | | |
 | --- | --- |
-| **App** | http://localhost:3000 |
+| **App** | http://localhost:3000 (first visit creates the admin account) |
 | **RabbitMQ management UI** | http://localhost:15672 |
 | **MongoDB** | `localhost:27017` |
 | **Start everything** | `docker compose up -d` |
 | **Stop and wipe data** | `docker compose down -v` |
 | **Lint** | `npm run lint` |
+| **Security tests** | `npm run test:e2e` (needs a fresh stack) |
 | **Env template** | [`.env.local.example`](.env.local.example) |
 
-MongoDB and RabbitMQ are bound to `127.0.0.1` only, so they are reachable from your machine but not from the rest of your network. The app itself is published on all interfaces (port 3000).
+MongoDB and RabbitMQ are bound to `127.0.0.1` only, so they are reachable from your machine but not from the rest of your network. The app itself is published on all interfaces (port 3000) and over plain HTTP; see the [production checklist](docs/SECURITY.md#production-checklist) before exposing it.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    Browser["Browser"] -->|"HTTP :3000"| App["Next.js app<br/>(pages + API routes)"]
-    App -->|"mongoose<br/>scoped app user"| Mongo[("MongoDB<br/>clients, notes, news")]
+    Browser["Browser"] -->|"HTTP :3000<br/>session cookie"| App["Next.js app<br/>(pages + API routes)"]
+    App -->|"mongoose<br/>scoped app user"| Mongo[("MongoDB<br/>clients, notes, news,<br/>users, sessions")]
     App -->|"amqplib<br/>best-effort publish"| Rabbit[["RabbitMQ<br/>queue: clients"]]
     Rabbit -.->|"no consumer yet"| Future["Future workers"]
 ```
 
 All three services run on one Docker network (`app_network`). The app talks to the others by service name (`mongodb`, `rabbitmq`), and Compose starts it only after both report healthy.
 
-**What happens when you add a customer:**
+**What happens when a signed-in user adds a customer:**
 
 ```mermaid
 sequenceDiagram
@@ -63,9 +66,12 @@ sequenceDiagram
     participant M as MongoDB
     participant R as RabbitMQ
 
-    U->>A: POST /api/clients
+    U->>A: POST /api/clients (cookie + Origin header)
+    A->>A: Check Origin, JSON body, rate limit
+    A->>M: Look up session and user
+    M-->>A: Active user
     A->>A: Validate and whitelist fields
-    A->>M: Insert client
+    A->>M: Insert client (createdBy = user)
     M-->>A: Saved document
     A->>R: Publish company name (best effort)
     A-->>U: 201 Created
@@ -74,26 +80,28 @@ sequenceDiagram
 
 ## Tech stack
 
-Versions are what a fresh `npm install` resolves today. `next` and `eslint-config-next` are declared as `latest`, so they move whenever you reinstall.
+Versions are what the committed `package-lock.json` resolves to; `npm ci` installs exactly those.
 
 | Layer | Technology | Version |
 | --- | --- | --- |
 | Framework | Next.js (Pages Router) | 16.3 |
 | UI library | React | 18.3 |
 | Styling | Tailwind CSS + daisyUI | 3.4 / 2.52 |
-| Accessible components | Headless UI (modals) | 1.7 |
+| Accessible components | Headless UI (modals, menus) | 1.7 |
 | Icons | Heroicons (v1) | 1.0 |
-| Database | MongoDB (Docker image `mongo:6.0`) via Mongoose | 6.13 |
-| Message broker | RabbitMQ (Docker image `rabbitmq:3-management-alpine`) via amqplib | 0.8 |
+| Database | MongoDB (Docker image `mongo:6.0`) via Mongoose | 8.24 |
+| Message broker | RabbitMQ (Docker image `rabbitmq:3-management-alpine`) via amqplib | 0.10 |
+| Authentication | Built in: Node `crypto` (scrypt), server-side sessions in MongoDB | |
 | Logging | pino | 7.11 |
 | Linting | ESLint (flat config) + `eslint-config-next` | 9.39 / 16.3 |
+| Tests | Node's built-in test runner (`node --test`) | |
 | Runtime | Node.js | 20 in Docker; 20.9 or newer on your host |
 | Packaging | Docker (multi-stage build), Docker Compose | |
 
 ## Prerequisites
 
 - [Docker Desktop](https://docs.docker.com/get-docker/) (includes Docker Compose and Buildx). Nothing else is required to run the app.
-- **Node.js 20.9 or newer**, only if you want to run `npm` commands on your host (linting, or Option B below).
+- **Node.js 20.9 or newer**, only if you want to run `npm` commands on your host (linting, tests, or Option B below).
 - Free ports on your machine: `3000`, `27017`, `5672`, `15672`.
 
 ## Quick start
@@ -105,13 +113,13 @@ cp .env.local.example .env
 # 2. Build and start MongoDB, RabbitMQ, and the app
 docker compose up -d
 
-# 3. Open the app
-#    http://localhost:3000
+# 3. Open http://localhost:3000
+#    A fresh install redirects you to /setup: create the admin account there.
 ```
 
-The first run downloads the images and builds the app, so give it a couple of minutes. `docker compose ps` should show `mongodb` and `rabbitmq` as `healthy` and `nextjs_app` as `Up`.
+The first run downloads the images and builds the app, so give it a couple of minutes. `docker compose ps` should show all three services as `healthy`.
 
-To stop everything and delete all stored data:
+To stop everything and delete all stored data (including accounts):
 
 ```bash
 docker compose down -v
@@ -141,9 +149,11 @@ Both are gitignored, and `.dockerignore` keeps them out of the app image. The te
 | `MONGO_APP_PASSWORD` | Compose, `mongo-init.js` | Password for that user. |
 | `RABBITMQ_USER` | Compose | RabbitMQ login, set as the broker's default user. |
 | `RABBITMQ_PASS` | Compose | RabbitMQ password. |
-| `LOG_LEVEL` | App | pino log level (`fatal`, `error`, `warn`, `info`, `debug`, `trace`). Defaults to `debug` when empty. |
-| `PERSISTENCE` | App | Must be exactly `true` to use MongoDB. Any other value, or unset, puts the app in [sample-data mode](#sample-data-mode). |
-| `MONGODB_URI` | App (host runs only) | Full Mongo connection string. Compose builds this itself for the container from the values above, overriding anything in `.env`. |
+| `LOG_LEVEL` | App | pino log level (`fatal`, `error`, `warn`, `info`, `debug`, `trace`). Defaults to `info` when empty. |
+| `COOKIE_SECURE` | App | Whether the session cookie carries the `Secure` attribute. Unset means on in production. Compose defaults it to `false` so `http://localhost` works; **set `true` once you serve HTTPS.** |
+| `APP_ORIGIN` | App | Public origin(s) of the app, comma separated (for example `https://crm.example.com`). Requests that change data must come from one of these. Empty means "the request's own host". |
+| `TRUST_PROXY` | App | `true` only when exactly one reverse proxy you control sits in front. It makes the app read the client IP from `X-Forwarded-For` for rate limiting. Default `false`. |
+| `MONGODB_URI` | App (host runs only) | Full Mongo connection string. **Required by the app.** Compose builds this itself for the container from the values above, overriding anything in `.env`. |
 | `RABBITMQ_URI` | App (host runs only) | Full AMQP connection string. Compose builds this for the container too. If empty, publishing is skipped. |
 
 Inside Docker Compose the app receives:
@@ -151,13 +161,13 @@ Inside Docker Compose the app receives:
 ```text
 MONGODB_URI  = mongodb://<MONGO_APP_USERNAME>:<MONGO_APP_PASSWORD>@mongodb:27017/<MONGO_DB>?authSource=<MONGO_DB>
 RABBITMQ_URI = amqp://<RABBITMQ_USER>:<RABBITMQ_PASS>@rabbitmq:5672
-PERSISTENCE  = true
 ```
 
-### Two things that catch people out
+### Things that catch people out
 
-- **Database credentials are applied once.** `mongo-init.js` only runs when MongoDB starts with an **empty** data volume. If you change `MONGO_APP_USERNAME`, `MONGO_APP_PASSWORD`, or `MONGO_DB` afterwards, the existing volume keeps the old user. Run `docker compose down -v` to recreate it (this deletes your data).
-- **`PERSISTENCE` is compared as a string.** `false`, `0`, or an empty value all mean "off". Only the exact text `true` turns persistence on.
+- **Database credentials are applied once.** `mongo-init.js` only runs when MongoDB starts with an **empty** data volume. If you change `MONGO_APP_USERNAME`, `MONGO_APP_PASSWORD`, or `MONGO_DB` afterwards, the existing volume keeps the old user. Run `docker compose down -v` to recreate it (this deletes your data, accounts included).
+- **The database is required.** There is no sample-data mode any more: it would have skipped authentication, so it was removed. The app refuses to start requests without `MONGODB_URI`.
+- **`COOKIE_SECURE=true` needs HTTPS.** A `Secure` cookie is not stored by most browsers over plain HTTP (Chrome and Firefox make an exception for `localhost`), so sign-in would appear to succeed and then bounce you back to the login page.
 
 ## Running the project
 
@@ -173,13 +183,13 @@ Compose starts three services:
 | --- | --- | --- | --- | --- |
 | `mongodb` | `mongodb` | `mongo:6.0` | `127.0.0.1:27017` | Data in the named volume `mongodb_data`. Runs `mongo-init.js` on first boot. Healthchecked with a `ping`. |
 | `rabbitmq` | `rabbitmq` | `rabbitmq:3-management-alpine` | `127.0.0.1:5672` (AMQP), `127.0.0.1:15672` (management UI) | No volume, so queued messages are lost when the container is removed (they survive a plain restart). Healthchecked with `rabbitmq-diagnostics ping`. |
-| `app` | `nextjs_app` | Built from the [`Dockerfile`](Dockerfile) | `0.0.0.0:3000` | Waits for both services above to be healthy. |
+| `app` | `nextjs_app` | Built from the [`Dockerfile`](Dockerfile) | `0.0.0.0:3000` | Waits for both services above to be healthy. Runs read-only, non-root, with all capabilities dropped, and has its own healthcheck (`/api/health`). |
 
 Everyday commands:
 
 ```bash
 docker compose ps                     # status and health
-docker compose logs -f app            # follow the app's logs
+docker compose logs -f app            # follow the app's logs (includes security events)
 docker compose logs rabbitmq          # broker logs
 docker compose up -d --build          # rebuild the app image after changing code
 docker compose down                   # stop and remove containers, keep MongoDB data
@@ -188,7 +198,7 @@ docker compose down -v                # ...and delete the MongoDB volume too
 
 > Code changes are **not** picked up automatically. The app runs from a production build baked into the image, so run `docker compose up -d --build` after editing anything.
 
-**How the image is built** ([`Dockerfile`](Dockerfile)): a three-stage build on `node:20-alpine`. Stage one installs dependencies, stage two runs `npm run build` (Next.js `standalone` output, enabled in [`next.config.js`](next.config.js)), and stage three copies only the standalone server and static assets into a slim runtime image that runs as a non-root user (`nextjs`) and starts with `node server.js`.
+**How the image is built** ([`Dockerfile`](Dockerfile)): a three-stage build on `node:20-alpine`. Stage one installs dependencies with `npm ci` from the lockfile, stage two runs `npm run build` (Next.js `standalone` output, enabled in [`next.config.js`](next.config.js)), and stage three copies only the standalone server and static assets into a slim runtime image that runs as a non-root user (`nextjs`) and starts with `node server.js`.
 
 ### Option B: Next.js on your host, dependencies in Docker
 
@@ -203,20 +213,60 @@ npm install
 npm run dev
 ```
 
-The app is then at http://localhost:3000. It connects through the loopback ports Compose publishes, using the `MONGODB_URI` and `RABBITMQ_URI` values from `.env.local`. If you also have the Compose `app` container running, stop it first (`docker compose stop app`) or the two will fight over port 3000.
+The app is then at http://localhost:3000. It connects through the loopback ports Compose publishes, using the `MONGODB_URI` and `RABBITMQ_URI` values from `.env.local`. If you also have the Compose `app` container running, stop it first (`docker compose stop app`) or the two will fight over port 3000. In development the session cookie is not `Secure` and the Content-Security-Policy is relaxed (React's dev tooling needs it).
 
 ### Option C: The app image on its own
 
 ```bash
 docker build -t demo-crm .
 docker run -p 3000:3000 \
-  -e PERSISTENCE=true \
   -e MONGODB_URI="mongodb://app_user:example@host.docker.internal:27017/mydatabase?authSource=mydatabase" \
   -e RABBITMQ_URI="amqp://user:example@host.docker.internal:5672" \
+  -e COOKIE_SECURE=false \
   demo-crm
 ```
 
-You must supply reachable MongoDB and RabbitMQ instances yourself. Without `PERSISTENCE=true` the container starts fine but serves [sample data](#sample-data-mode) only.
+You must supply reachable MongoDB and RabbitMQ instances yourself. The image defaults to production mode, so `COOKIE_SECURE=false` is needed for plain HTTP.
+
+## Accounts and roles
+
+### First run
+
+A fresh install has no users. Any page request redirects to **`/setup`**, where you create the administrator (name, email, password of 12 to 128 characters). That works **exactly once**; afterwards `/setup` redirects to the login page and the API answers `409`. There is no default account and no self-signup.
+
+### Adding people
+
+Admins open **Users** (top navigation, or the account menu), then **Add user**. The app generates a one-time temporary password and shows it once. Hand it to the person; they must choose their own password at first sign-in before they can use anything else. Admins can also change roles, disable or re-enable accounts, and reset a password (which signs the user out everywhere and issues a new temporary one).
+
+### What each role can do
+
+This is a shared team workspace: everyone sees every customer. Roles limit *actions*.
+
+| Action | Member | Admin |
+| --- | --- | --- |
+| View customers, notes, news | yes | yes |
+| Create and edit customers, add notes | yes | yes |
+| Delete a note | own notes only | any note |
+| Delete a customer | no | yes |
+| Create users, change roles, disable users, reset passwords | no | yes |
+| Change own password | yes | yes |
+
+An admin can't change their own role or disable themselves, and the last active admin can't be demoted or disabled. Every rule is enforced by the API, not just hidden in the UI.
+
+### Sessions
+
+Signing in sets an `HttpOnly` cookie. You are signed out after 8 hours without activity or 7 days in total. Logging out, changing your password, or an admin disabling or resetting your account ends your sessions immediately on the server. Too many failed sign-ins (10 for one account, 100 from one IP, per 15 minutes) are throttled with a `429`.
+
+### If the only admin loses their password
+
+There is no email reset. Recover from the database: this removes **accounts** (not customers or notes) and re-opens first-run setup.
+
+```bash
+docker exec mongodb mongosh "mongodb://app_user:<MONGO_APP_PASSWORD>@localhost:27017/mydatabase" --quiet \
+  --eval 'db.users.deleteMany({}); db.sessions.deleteMany({})'
+```
+
+Wait about a minute (a stale setup lock is cleared automatically after 60 seconds), then visit `/setup` and create a new admin. Every other user has to be created again. Existing customers and notes stay, though their "added by" names disappear because the accounts are gone.
 
 ## Using the app
 
@@ -231,10 +281,18 @@ You must supply reachable MongoDB and RabbitMQ instances yourself. Without `PERS
 
 Click any card to open it.
 
-- **Profile** with email and website links. Only `http(s)` links are made clickable.
-- **Edit** and **Delete** (with a confirmation dialog). Deleting a customer also deletes their notes.
-- **Notes**: add free-text notes (up to 2000 characters), newest first, and delete individual notes.
+- **Profile** with email and website links (only `http(s)` links are clickable) and who added the customer.
+- **Edit** for everyone, **Delete** (with a confirmation dialog) for admins only. Deleting a customer also deletes their notes.
+- **Notes**: add free-text notes (up to 2000 characters), newest first, each showing its author. You can delete your own notes; admins can delete any.
 - **Latest news**: articles stored for the customer's company. See [Adding news](#adding-news).
+
+### Account (`/account`)
+
+Reachable from the user menu in the header. Shows your details and lets you change your password (current password required). Changing it signs out all your other sessions.
+
+### Users (`/admin/users`, admins only)
+
+A table of everyone with role, status, and last sign-in, plus the actions described under [Accounts and roles](#accounts-and-roles).
 
 ### Theme
 
@@ -260,40 +318,77 @@ On Windows PowerShell, quoting is awkward. Save the `db.news.insertOne(...)` cal
 Get-Content seed.js | docker exec -i mongodb mongosh "mongodb://app_user:<MONGO_APP_PASSWORD>@localhost:27017/mydatabase" --quiet
 ```
 
-### Sample-data mode
-
-When `PERSISTENCE` is not exactly `true`, the app never touches MongoDB:
-
-- `GET` routes serve two built-in sample customers (John Doe and Omri), with working search and pagination.
-- Every write (`POST`, `PUT`, `DELETE`) returns `503` with `Persistence is disabled, so this action is unavailable.`
-- Notes always come back empty, and no messages are published to RabbitMQ.
-
 ## API reference
 
 Base URL: `http://localhost:3000`. All routes speak JSON. Every response has a `success` boolean; failures also carry an `error` string.
 
-| Route | Methods | Purpose |
-| --- | --- | --- |
-| `/api/clients` | `GET`, `POST` | List/search customers, create a customer |
-| `/api/clients/[id]` | `GET`, `PUT`, `DELETE` | Read, update, delete one customer |
-| `/api/clients/[id]/notes` | `GET`, `POST` | List or add a customer's notes |
-| `/api/notes/[id]` | `DELETE` | Delete one note |
-| `/api/news?company=` | `GET` | Raw news documents for a company |
-| `/api/hello` | `GET` | Leftover Next.js boilerplate; returns `{ "name": "John Doe" }` |
+**Every route except the [public ones](#public-routes) requires a session cookie.** State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) must also send an `Origin` header matching the app's origin, and bodies must be `application/json`. Browsers do all of this for you; for scripts and `curl`, see [Calling the API from a script](#calling-the-api-from-a-script).
+
+| Route | Methods | Access | Purpose |
+| --- | --- | --- | --- |
+| `/api/auth/setup` | `GET`, `POST` | public (once) | Report whether setup is needed; create the first admin |
+| `/api/auth/login` | `POST` | public | Sign in |
+| `/api/auth/logout` | `POST` | public | Sign out (revokes the session) |
+| `/api/auth/me` | `GET` | signed in | The current user |
+| `/api/auth/change-password` | `POST` | signed in | Change own password |
+| `/api/clients` | `GET`, `POST` | signed in | List/search customers, create a customer |
+| `/api/clients/[id]` | `GET`, `PUT` | signed in | Read or update one customer |
+| `/api/clients/[id]` | `DELETE` | **admin** | Delete a customer and its notes |
+| `/api/clients/[id]/notes` | `GET`, `POST` | signed in | List or add a customer's notes |
+| `/api/notes/[id]` | `DELETE` | author or **admin** | Delete one note |
+| `/api/news?company=` | `GET` | signed in | Raw news documents for a company |
+| `/api/users` | `GET`, `POST` | **admin** | List users; create a user |
+| `/api/users/[id]` | `PATCH` | **admin** | Change name, role, active flag, or reset the password |
+| `/api/health` | `GET` | public | Liveness probe: `{ "status": "ok" }` and nothing else |
 
 IDs are 24-character hex MongoDB ObjectIds. A malformed or unknown id returns `404`.
 
-### `GET /api/clients`
+### Calling the API from a script
+
+```bash
+BASE=http://localhost:3000
+
+# Sign in and keep the session cookie in a jar
+curl -c jar.txt -X POST $BASE/api/auth/login \
+  -H "Origin: $BASE" -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"your password here"}'
+
+# Reads only need the cookie
+curl -b jar.txt "$BASE/api/clients?q=acme"
+
+# Writes also need Origin and a JSON content type
+curl -b jar.txt -X POST $BASE/api/clients \
+  -H "Origin: $BASE" -H "Content-Type: application/json" \
+  -d '{"name":"Ada Lovelace","company":"Analytical Engines","email":"ada@engines.io","website":"engines.io"}'
+```
+
+Leaving out `Origin` on a write gives `403 Cross-origin request blocked`; a wrong content type gives `415`.
+
+> **Windows PowerShell:** `curl` is an alias for `Invoke-WebRequest`. Use `curl.exe` and pass JSON from a file (`--data-binary "@body.json"`) to avoid quoting problems.
+
+### Public routes
+
+**`GET /api/auth/setup`** returns `{ "success": true, "data": { "needsSetup": true } }` on a fresh install and `false` afterwards.
+
+**`POST /api/auth/setup`** with `{ name, email, password }` creates the first admin, signs them in, and returns `201`. Any later call returns `409 Setup has already been completed`.
+
+**`POST /api/auth/login`** with `{ email, password }` returns `200` with the user and a `Set-Cookie: crm_session=...` header. Wrong password, unknown account, and disabled account all return the same `401 Invalid email or password`. Too many attempts return `429` with a `Retry-After` header.
+
+**`POST /api/auth/logout`** deletes the session on the server and clears the cookie.
+
+### Signed-in routes
+
+**`GET /api/auth/me`** returns `{ id, email, name, role, active, mustChangePassword, lastLoginAt, createdAt }`. A user still on a temporary password gets `403` with `"code": "PASSWORD_CHANGE_REQUIRED"` from every route except this one and change-password.
+
+**`POST /api/auth/change-password`** with `{ currentPassword, newPassword }`. Signs out all other sessions and returns a fresh cookie.
+
+**`GET /api/clients`**
 
 | Query param | Default | Description |
 | --- | --- | --- |
 | `q` | none | Case-insensitive substring match on `name`, `company`, or `email`. Regex characters are escaped. |
 | `page` | `1` | 1-based page number. |
 | `limit` | `12` | Page size, clamped to 1-50. |
-
-```bash
-curl "http://localhost:3000/api/clients?q=acme&page=1&limit=5"
-```
 
 ```json
 {
@@ -305,6 +400,7 @@ curl "http://localhost:3000/api/clients?q=acme&page=1&limit=5"
       "company": "Analytical Engines",
       "email": "ada@engines.io",
       "website": "https://engines.io",
+      "createdBy": "6aad59a0ce7d87f6e30cdd00",
       "createdAt": "2026-09-18T15:31:00.000Z",
       "updatedAt": "2026-09-18T15:31:00.000Z"
     }
@@ -317,55 +413,37 @@ curl "http://localhost:3000/api/clients?q=acme&page=1&limit=5"
 
 Results are sorted newest first.
 
-### `POST /api/clients`
+**`POST /api/clients`** returns `201` with `{ "success": true, "data": { ...client } }`. Unknown fields are ignored, and `createdBy` is always taken from your session, never from the request. If `company` is set, its value is published to RabbitMQ afterwards (best effort).
 
-```bash
-curl -X POST http://localhost:3000/api/clients \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Ada Lovelace","company":"Analytical Engines","email":"ada@engines.io","website":"engines.io"}'
-```
+**`GET /api/clients/[id]`** returns the customer, an `articles` array (every article from all `news` documents whose `company` matches), and `createdBy` as `{ _id, name }` when known.
 
-Returns `201` with `{ "success": true, "data": { ...client } }`. Unknown fields are ignored. If `company` is set, its value is published to RabbitMQ afterwards (best effort).
+**`PUT /api/clients/[id]`** is a partial update: send only the fields to change (`name`, `email`, `company`, `website`). Validation runs on update. Sending no recognised fields returns `400 No fields to update`.
 
-### `GET /api/clients/[id]`
+**`DELETE /api/clients/[id]`** (admin) deletes the customer and all of their notes.
 
-Returns the customer plus an `articles` array, which is every article from all `news` documents whose `company` matches the customer's.
+**`GET` / `POST /api/clients/[id]/notes`**: `GET` returns notes newest first, each with `createdBy: { _id, name }`. `POST` takes `{ "text": "..." }`, returns `201`, and `404` if the customer does not exist.
 
-```json
-{ "success": true, "data": { "_id": "...", "name": "Ada Lovelace", "company": "Analytical Engines", "articles": [] } }
-```
+**`DELETE /api/notes/[id]`**: the note's author or an admin. Anyone else gets `403`; notes that predate accounts have no author, so only an admin can delete them.
 
-### `PUT /api/clients/[id]`
+### Admin routes
 
-Partial update: send only the fields to change (`name`, `email`, `company`, `website`). Validation runs on update. Sending no recognised fields returns `400 No fields to update`. Returns the updated document.
+**`GET /api/users`** lists every user (never including password hashes).
 
-### `DELETE /api/clients/[id]`
+**`POST /api/users`** with `{ name, email, role }` (`role` is `member` or `admin`, default `member`) returns `201` with `{ user, temporaryPassword }`. The temporary password is 16 characters, shown only in this response, and must be changed at first sign-in. A duplicate email returns `409`.
 
-Deletes the customer and all of their notes. Returns `200` with `{ "success": true, "data": {} }`.
-
-### `GET /api/clients/[id]/notes` and `POST /api/clients/[id]/notes`
-
-```bash
-curl -X POST http://localhost:3000/api/clients/<id>/notes \
-  -H "Content-Type: application/json" \
-  -d '{"text":"First call went well"}'
-```
-
-`GET` returns notes newest first. `POST` returns `201` with the note, or `404` if the customer does not exist.
-
-### `DELETE /api/notes/[id]`
-
-Returns `200` on success, `404` if the note does not exist.
+**`PATCH /api/users/[id]`** with any of `name`, `role`, `active`, `resetPassword: true`. Role changes, disabling, and resets end the user's sessions immediately. `resetPassword` returns `{ user, temporaryPassword }`. You can't change your own role or disable yourself (`400`), and the last active admin is protected.
 
 ### Validation rules
 
 | Field | Rule |
 | --- | --- |
-| `name` | Required, trimmed, max 120 characters |
-| `email` | Optional, trimmed, lowercased, must look like `a@b.c`, max 254 characters |
-| `company` | Optional, trimmed, max 120 characters |
-| `website` | Optional, max 2048 characters. A missing scheme is added (`engines.io` becomes `https://engines.io`); the result must start with `http://` or `https://` and contain no spaces |
+| customer `name` | Required, trimmed, max 120 characters |
+| customer `email` | Optional, trimmed, lowercased, must look like `a@b.c`, max 254 characters |
+| customer `company` | Optional, trimmed, max 120 characters |
+| customer `website` | Optional, max 2048 characters. A missing scheme is added (`engines.io` becomes `https://engines.io`); the result must start with `http://` or `https://` and contain no spaces |
 | note `text` | Required, trimmed (whitespace-only is rejected), max 2000 characters |
+| user `name` / `email` | Same limits as above; the email must be unique |
+| password | 12 to 128 characters, not your email address, not an obviously weak one |
 
 Multiple failures are joined into one message, e.g. `{"success":false,"error":"Email is invalid, Website is invalid"}`.
 
@@ -374,17 +452,20 @@ Multiple failures are joined into one message, e.g. `{"success":false,"error":"E
 | Code | Meaning |
 | --- | --- |
 | `200` / `201` | Success / created |
-| `400` | Validation failed, or `PUT` with nothing to update |
+| `400` | Validation failed, malformed JSON, or nothing to update |
+| `401` | No valid session (also a failed login) |
+| `403` | Signed in but not allowed; cross-origin request blocked; or a password change is required first |
 | `404` | Unknown or malformed id |
 | `405` | Method not supported on that route (an `Allow` header lists the valid ones) |
+| `409` | Conflict: setup already done, duplicate email, or would remove the last admin |
+| `413` | Request body too large |
+| `415` | Body is not `application/json` |
+| `429` | Rate limited (`Retry-After` says how long to wait) |
 | `500` | Unexpected server error (details are logged, not returned) |
-| `503` | Write attempted while `PERSISTENCE` is off |
-
-> **Windows PowerShell:** `curl` is an alias for `Invoke-WebRequest`. Use `curl.exe` and pass JSON from a file (`--data-binary "@body.json"`) to avoid quoting problems.
 
 ## Data model
 
-Three MongoDB collections in the `MONGO_DB` database. Mongoose creates the indexes automatically when the app first connects.
+MongoDB collections in the `MONGO_DB` database. Mongoose creates the indexes automatically when the app first connects.
 
 **`clients`** ([`model/client.js`](model/client.js)) — timestamps enabled
 
@@ -394,6 +475,7 @@ Three MongoDB collections in the `MONGO_DB` database. Mongoose creates the index
 | `email` | String | lowercased |
 | `company` | String | **indexed**; the join key to `news` |
 | `website` | String | normalised to include a scheme |
+| `createdBy` | ObjectId → `User` | set from the session; absent on customers created before accounts existed |
 | `createdAt`, `updatedAt` | Date | automatic |
 
 **`notes`** ([`model/note.js`](model/note.js)) — `createdAt` only
@@ -402,7 +484,33 @@ Three MongoDB collections in the `MONGO_DB` database. Mongoose creates the index
 | --- | --- | --- |
 | `client` | ObjectId → `Client` | required, **indexed** |
 | `text` | String | required |
+| `createdBy` | ObjectId → `User` | the author; absent on older notes |
 | `createdAt` | Date | automatic |
+
+**`users`** ([`model/user.js`](model/user.js)) — timestamps enabled
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `email` | String | required, **unique**, lowercased |
+| `name` | String | required |
+| `role` | `admin` \| `member` | default `member` |
+| `passwordHash` | String | `scrypt$N$r$p$salt$hash`; never selected or serialized by default |
+| `active` | Boolean | disabled users can't sign in and lose their sessions |
+| `mustChangePassword` | Boolean | true for temporary passwords |
+| `lastLoginAt` | Date | |
+
+**`sessions`** ([`model/session.js`](model/session.js))
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `tokenHash` | String | SHA-256 of the cookie token, **unique**. The token itself is never stored |
+| `user` | ObjectId → `User` | **indexed** |
+| `expiresAt` | Date | **TTL index**: MongoDB deletes the document after this time |
+| `lastSeenAt`, `userAgent`, `ip` | | for the idle timeout and diagnostics |
+
+**`ratelimits`** ([`model/rateLimit.js`](model/rateLimit.js)) — fixed-window counters (`key`, `count`, `expiresAt` with a TTL index) for login, setup, and password-change throttling.
+
+**`setups`** ([`model/setup.js`](model/setup.js)) — a single lock document that makes first-run setup atomic.
 
 **`news`** ([`model/news.js`](model/news.js)) — read-only for the app; you populate it yourself
 
@@ -420,7 +528,7 @@ Creating a customer with a company publishes that company name to a durable queu
 - **Message body:** the company name as a JSON string, e.g. `"Analytical Engines"` (quotes included). Messages are marked persistent.
 - **Best effort:** publishing never throws. If the broker is unreachable, the customer is still saved, the failure is logged (`Failed to write message to RabbitMQ queue: ...`), and the next request retries with a fresh connection. Messages sent while the broker is down or still starting are **dropped, not buffered**.
 - **No consumer exists yet**, so messages accumulate in the queue.
-- **Skipped entirely** when `RABBITMQ_URI` is empty or persistence is off.
+- **Skipped entirely** when `RABBITMQ_URI` is empty.
 
 Inspecting the queue:
 
@@ -434,13 +542,35 @@ docker exec rabbitmq rabbitmqctl list_queues name messages
 
 For the reasoning and the full code walk-through, see [docs/RABBITMQ.md](docs/RABBITMQ.md).
 
+## Security
+
+The full write-up, with a threat model, a control-by-control table tied to automated tests, and a production checklist, is in **[docs/SECURITY.md](docs/SECURITY.md)**. In brief:
+
+- **Authentication:** salted scrypt passwords; random opaque session tokens (only their SHA-256 is stored); `HttpOnly`, `SameSite=Lax` cookie; idle and absolute session timeouts; real server-side logout and revocation.
+- **Authorization:** admin and member roles enforced on every API route; ownership recorded from the session, never from the request.
+- **Attack resistance:** CSRF protection (Origin check and JSON-only bodies), login throttling with identical error responses, NoSQL-injection and regex-injection defences, open-redirect protection, request size limits, no stack traces in responses.
+- **Browser hardening:** strict Content-Security-Policy (no inline scripts), `nosniff`, frame denial, referrer and permissions policies, HSTS in production, no `X-Powered-By`.
+- **Deployment hardening:** read-only, non-root app container with all capabilities dropped; databases on loopback only; app connects to MongoDB with a least-privilege user; lockfile-based `npm ci`, `npm audit` and Dependabot.
+
+**Before exposing this beyond your own machine:** serve it over HTTPS, set `COOKIE_SECURE=true` and `APP_ORIGIN`, use real credentials, and read [the checklist](docs/SECURITY.md#production-checklist).
+
+Things to know:
+
+- **No multi-factor authentication and no email-based password reset.** See [what is not covered](docs/SECURITY.md#what-is-not-covered).
+- **No TLS built in.** The app speaks plain HTTP on port 3000; put a reverse proxy in front.
+- **Credentials in git history.** An early commit (`608315f`) added a `.env` with default development credentials (`admin` / `password`); it was later deleted, but it is still recoverable from history. Those values are placeholders, but history has not been rewritten. Treat any credentials that ever appeared there as burned.
+- Never commit real secrets. `.env`, `.env.local`, and `.env*.local` are gitignored and excluded from the Docker build context.
+
 ## Project structure
 
 ```text
 .
-├── .github/workflows/CICD.yml   CI: lint, image build, Compose smoke test
+├── .github/
+│   ├── workflows/CICD.yml       CI: lint, audit, image build, Compose stack, security tests
+│   └── dependabot.yml           Weekly dependency update PRs
 ├── components/                  React components
-│   ├── Layout.js                  Page shell: header, nav, theme toggle
+│   ├── Layout.js                  Page shell: header, nav, theme toggle, user menu
+│   ├── AuthCard.js                Centered card for the signed-out pages
 │   ├── ClientList.js              List page: search, pagination, add dialog, card grid
 │   ├── ClientForm.js              Add/edit form (used in a dialog)
 │   ├── Notes.js                   Notes list and add form for one customer
@@ -448,27 +578,40 @@ For the reasoning and the full code walk-through, see [docs/RABBITMQ.md](docs/RA
 │   ├── Avatar.js                  Initials avatar with a stable colour per name
 │   ├── Modal.js                   Headless UI dialog wrapper
 │   └── Toast.js                   Toast context and provider
-├── docs/RABBITMQ.md             Deep dive on the RabbitMQ integration
+├── docs/
+│   ├── SECURITY.md              Threat model, controls, checklist, limits
+│   └── RABBITMQ.md              Deep dive on the RabbitMQ integration
 ├── lib/
-│   ├── api-helpers.js             Server helpers: PERSISTENCE check, sample data, validation/error helpers
-│   ├── api.js                     Browser fetch wrapper that throws on API errors
+│   ├── auth.js                    withAuth / withPublic route wrappers, requireUserSSR page guard
+│   ├── password.js                scrypt hashing, password policy, temporary passwords
+│   ├── session.js                 Session tokens, cookies, lookup and revocation
+│   ├── security.js                Origin check, client IP, safe redirects, cookie settings
+│   ├── rate-limit.js              MongoDB-backed and in-memory rate limiters
+│   ├── logger.js                  Shared pino logger with secret redaction
+│   ├── api-helpers.js             Validation, pagination, and error helpers
+│   ├── api.js                     Browser fetch wrapper (redirects to /login on 401)
 │   ├── useApi.js                  React hook for GET requests with reload
 │   ├── format.js                  Initials, safe URLs, date formatting
 │   ├── mong-connect.js            Cached Mongoose connection (survives hot reloads)
 │   └── rabbitmq.js                Cached amqplib channel and best-effort publisher
-├── model/                       Mongoose models: client, note, news
+├── model/                       Mongoose models: client, note, news, user, session, rateLimit, setup
 ├── pages/
 │   ├── _app.js                    Global styles and toast provider
-│   ├── _document.js               Applies the saved theme before first paint
+│   ├── _document.js               Loads the theme script before first paint
 │   ├── index.js                   Customer list
 │   ├── clients/[id].js            Customer detail
+│   ├── login.js, setup.js         Signed-out pages
+│   ├── account.js                 Change password
+│   ├── admin/users.js             User management (admins)
 │   └── api/                       API routes (see API reference)
+├── public/theme-init.js         Restores the saved theme (external file so the CSP can ban inline scripts)
+├── tests/security.test.mjs      Black-box security suite (npm run test:e2e)
 ├── styles/globals.css           Tailwind layers
-├── Dockerfile                   Multi-stage production image
-├── docker-compose.yaml          mongodb + rabbitmq + app
+├── Dockerfile                   Multi-stage production image with a healthcheck
+├── docker-compose.yaml          mongodb + rabbitmq + hardened app
 ├── mongo-init.js                Creates the scoped MongoDB app user on first boot
 ├── eslint.config.mjs            ESLint flat config
-├── next.config.js               Enables standalone output for the Docker image
+├── next.config.js               Standalone output, security headers, CSP
 ├── tailwind.config.js           Tailwind content paths and the daisyUI plugin
 ├── .env.local.example           Environment template
 └── app.json                     Leftover PaaS manifest; nothing in this repo uses it
@@ -483,59 +626,79 @@ For the reasoning and the full code walk-through, see [docs/RABBITMQ.md](docs/RA
 | `npm run dev` | Next.js dev server with hot reload on http://localhost:3000 |
 | `npm run build` | Production build (the same command the Dockerfile runs) |
 | `npm run lint` | ESLint over the whole repo; fails on **any** warning |
+| `npm run test:e2e` | Security test suite against a running, fresh stack |
 
 `next lint` no longer exists in Next.js 16, which is why `lint` calls ESLint directly. Rules come from `eslint-config-next/core-web-vitals`, which includes React's newer strict hook rules. Keep these in mind when writing components:
 
 - Don't declare components inside other components.
 - Don't call `setState` synchronously inside `useEffect`. Set it from an async callback, an event handler, or derive the value instead (see [`lib/useApi.js`](lib/useApi.js)).
-- Use `next/link` rather than `<a>` for internal links, and escape apostrophes and quotes in JSX text.
-
-There is currently **no automated test suite**. Verification is lint, a production build, and the CI smoke test.
+- Use `next/link` and the router (not `window.location`) for internal navigation, and escape apostrophes and quotes in JSX text.
 
 ### Conventions worth knowing
 
+- **Every API route goes through `withAuth`** (or `withPublic` for login, setup, and logout) from [`lib/auth.js`](lib/auth.js). Routes are declared per HTTP method, with an optional `role: 'admin'`:
+  ```js
+  export default withAuth({
+    GET: { handler: list },
+    DELETE: { role: 'admin', handler: remove },
+  })
+  ```
+  The wrapper handles the method check, flood limit, CSRF check, JSON requirement, session lookup, and role check, and passes `{ user, ip }` to your handler. Add `export const config = { api: { bodyParser: { sizeLimit: '50kb' } } }` to cap the body.
+- **Every page goes through `requireUserSSR`** in `getServerSideProps`, which redirects signed-out visitors to `/login` and passes `user` as a prop.
+- **Never trust the request for identity or ownership.** Take the user from the handler's argument, copy body fields with `pickClientFields()` rather than passing `req.body` to Mongoose, and check that inputs are strings before using them in a query.
 - **Tailwind only scans `pages/` and `components/`** ([`tailwind.config.js`](tailwind.config.js)). Put any file that contains class names in one of those folders, or its classes won't be generated.
-- **Client-side data fetching** goes through [`lib/api.js`](lib/api.js) and [`lib/useApi.js`](lib/useApi.js). The old `axios` dependency was removed.
-- **Server-side helpers** live in [`lib/api-helpers.js`](lib/api-helpers.js): always use `persistenceEnabled()` instead of reading `process.env.PERSISTENCE` directly, and `pickClientFields()` rather than passing `req.body` to Mongoose.
-- **Adding an API route:** create a file under `pages/api/`, call `dbConnect()` only when `persistenceEnabled()`, and reuse the response helpers (`notFound`, `sendError`, `methodNotAllowed`, `persistenceDisabled`) for consistent errors.
+- **Client-side data fetching** goes through [`lib/api.js`](lib/api.js) and [`lib/useApi.js`](lib/useApi.js).
+- **No inline scripts.** The production CSP forbids them, so put scripts in `public/` and load them with `next/script`.
+- **Log security events with the shared logger** ([`lib/logger.js`](lib/logger.js)) and never log passwords, tokens, or hashes.
+
+## Testing
+
+The security suite is black-box: it talks to a running stack over HTTP and checks behaviour (61 tests covering authentication, first-run setup, sessions and cookies, login throttling, CSRF, role enforcement, redirects, headers, and error handling).
+
+```bash
+docker compose down -v && docker compose up -d --build   # must be a fresh install
+npm run test:e2e
+```
+
+It creates the first admin through `/setup`, so it needs an empty database and fails immediately with an explanation if users already exist. Set `BASE_URL` to test another address and `E2E_EXPECT_SECURE=true` if that deployment marks cookies `Secure`. It runs in CI on every push and pull request.
+
+It cannot check whether the Content-Security-Policy causes errors in a real browser; open the dev-tools console while using the app after changing scripts or styles.
+
+There are no unit tests for the UI. Beyond this suite, verification is lint and a production build.
 
 ## CI
 
 [`.github/workflows/CICD.yml`](.github/workflows/CICD.yml) has one job, `build-test`, run on every push and pull request to `master` (and manually via `workflow_dispatch`). Newer pushes cancel in-progress runs for the same pull request.
 
-1. **Set up Node 20** with npm caching and run `npm install`.
-2. **Lint** with `npm run lint`. Any warning or error fails the build, and it runs before the slower steps.
-3. **Build the Docker image** with Buildx and the GitHub Actions layer cache.
-4. **Start the Compose stack** and check that `http://localhost:3000` responds (with retries).
-5. On failure, dump `docker compose logs`; always tear the stack down.
+1. **Set up Node 20** with npm caching and `npm ci` (exactly the lockfile).
+2. **Lint** with `npm run lint`. Any warning or error fails the build.
+3. **Audit** production dependencies: `npm audit --omit=dev --audit-level=high`.
+4. **Build the Docker image** with Buildx and the GitHub Actions layer cache.
+5. **Start the Compose stack** from a clean state and wait for the app's healthcheck.
+6. **Run the security tests** (`npm run test:e2e`).
+7. On failure, dump `docker compose logs`; always tear the stack down.
 
 **Requirements:**
 
-- **Commit `package-lock.json`.** `setup-node`'s npm cache fails without a lockfile.
-- **Repository secrets** feed the Compose stack: `MONGO_NAME`, `MONGO_PASS`, `MONGO_DB`, `MONGO_APP_USERNAME`, `MONGO_APP_PASSWORD`, `RABBITMQ_USER`, `RABBITMQ_PASS`, and `LOG_LEVEL`. The workflow also passes `MONGODB_URI`, `RABBITMQ_URI`, and `PERSISTENCE`, but Compose derives its own values for those. A missing secret becomes an empty variable and Compose will fail.
+- **`package-lock.json` must be committed.** `setup-node`'s npm cache and `npm ci` both need it.
+- **Repository secrets** feed the Compose stack: `MONGO_NAME`, `MONGO_PASS`, `MONGO_DB`, `MONGO_APP_USERNAME`, `MONGO_APP_PASSWORD`, `RABBITMQ_USER`, `RABBITMQ_PASS`, and `LOG_LEVEL`. A missing secret becomes an empty variable and Compose will fail.
 
-There is **no deploy job** at present. It was removed because the AWS account it targeted no longer exists.
-
-## Security notes
-
-Read these before putting this anywhere beyond your own machine.
-
-- **There is no authentication or authorisation.** Anyone who can reach port 3000 can read, create, edit, and delete every customer and note.
-- **Least privilege for MongoDB.** The app never uses the root account; it connects as a user with `readWrite` on one database. The root credentials exist only to initialise the container.
-- **Databases are loopback-only.** MongoDB and RabbitMQ are published on `127.0.0.1`. Other containers on `app_network` can still reach them.
-- **RabbitMQ uses a single account** with full rights on the default virtual host. There is no scoped application user for it yet.
-- **No TLS.** Traffic between the browser, app, and databases is unencrypted.
-- **Input handling:** writes only accept a fixed set of string fields, search input is regex-escaped, the news endpoint only accepts a plain-string `company`, and links are rendered only for `http(s)` URLs.
-- **Credentials in git history.** An early commit (`608315f`) added a `.env` with default development credentials (`admin` / `password`); it was later deleted, but it is still recoverable from history. Those values are placeholders, but history has not been rewritten. Treat any credentials that ever appeared there as burned.
-- Never commit real secrets. `.env`, `.env.local`, and `.env*.local` are gitignored and excluded from the Docker build context.
+[Dependabot](.github/dependabot.yml) opens weekly PRs for npm, Docker, and GitHub Actions updates. There is no deploy job at present; it was removed because the AWS account it targeted no longer exists.
 
 ## Troubleshooting
 
 | Symptom | Likely cause and fix |
 | --- | --- |
 | Compose warns `The "MONGO_NAME" variable is not set`, or MongoDB won't start | No `.env` file. Run `cp .env.local.example .env`. |
+| Every page redirects to `/setup` | Fresh database with no users. Create the admin there. |
+| I can't reach `/setup` any more | An admin already exists (by design). If the only admin is locked out, see [If the only admin loses their password](#if-the-only-admin-loses-their-password). |
+| Sign-in succeeds but I land back on the login page | The browser dropped the cookie: `COOKIE_SECURE=true` on a plain-HTTP site. Serve HTTPS, or set `COOKIE_SECURE=false` for local use. |
+| `429 Too many attempts` when signing in | Throttled after repeated failures (10 per account or 100 per IP in 15 minutes). Wait for the `Retry-After` time. |
+| `403 Cross-origin request blocked` from a script or proxy | Writes must send an `Origin` header matching the app. Add `-H "Origin: http://localhost:3000"` to `curl`, or set `APP_ORIGIN` to your public URL when using a proxy or another hostname. |
+| `403 You must change your password first` | The account is on a temporary password. Sign in through the browser and change it at `/account`. |
+| App logs `COOKIE_SECURE is false in production` | Expected for local HTTP. For real deployments serve HTTPS and set `COOKIE_SECURE=true`. |
 | App logs `Authentication failed`, or `mongo-init.js` seems to have been ignored | The MongoDB volume was created with different credentials. Init only runs on an empty volume: `docker compose down -v`, then `docker compose up -d`. |
-| The app shows two sample customers and "Add" fails with a 503 | `PERSISTENCE` isn't exactly `true`. Check `.env` and recreate the container. |
+| Requests fail with `MONGODB_URI is not set` | Running the app outside Compose without `MONGODB_URI`. Set it in `.env.local`. |
 | I changed code but nothing changed in Docker | The image is a baked production build. Use `docker compose up -d --build`. |
 | `port is already allocated` on 3000, 27017, 5672, or 15672 | Another process owns the port. Stop it, or change the left-hand side of the mapping in `docker-compose.yaml`. |
 | Running Option B, port 3000 is busy | The Compose `app` container is still running. `docker compose stop app`. |
@@ -543,23 +706,26 @@ Read these before putting this anywhere beyond your own machine.
 | Nothing appears in the `clients` queue | Was a company entered? Is `rabbitmq` healthy (`docker compose ps`)? Check `docker compose logs app` for `Failed to write message to RabbitMQ queue`. Messages sent while the broker was down or starting are dropped. |
 | A new customer isn't in the list | A search filter may be active, or you're on a later page. The list is newest first. |
 | The news panel is empty | Nothing seeds the `news` collection, and the company must match exactly. See [Adding news](#adding-news). |
+| `npm run test:e2e` says it needs a fresh install | Users already exist. `docker compose down -v && docker compose up -d --build`, then run it again. |
 | `npm run dev` fails with a missing native/SWC binary | `node_modules` was installed on a different OS (for example inside a Linux container). Delete `node_modules` and `.next`, then run `npm install` on your host. |
 | `npm run lint` fails | Run it locally and fix what it reports; CI treats warnings as failures. |
-| CI fails at Setup Node with "Dependencies lock file is not found" | `package-lock.json` isn't committed. |
+| CI fails at Setup Node or `npm ci` with a lockfile error | `package-lock.json` isn't committed, or is out of sync with `package.json`. Run `npm install` and commit the result. |
 | Git warns `LF will be replaced by CRLF` | Harmless line-ending conversion on Windows. |
 
 ## Known limitations
 
-- No authentication, users, roles, or ownership of customers.
-- The RabbitMQ queue has no consumer, and messages are not guaranteed: publishing is best effort and drops messages when the broker is unavailable.
-- RabbitMQ has no persistent volume, so queued messages don't survive `docker compose down`.
+- No multi-factor authentication, single sign-on, or email-based password reset; admins reset passwords.
+- All members can see all customers (a shared workspace by design). There is no per-user or per-team isolation, tagging, assignment, import, export, deals, or tasks.
+- The app speaks plain HTTP and has no TLS of its own; traffic to MongoDB and RabbitMQ is unencrypted too.
+- The RabbitMQ queue has no consumer, messages are not guaranteed (publishing is best effort and drops messages when the broker is unavailable), and the broker uses a single full-access account with no persistent volume, so queued messages don't survive `docker compose down`.
 - News can't be created from the app; it must be inserted into MongoDB directly.
-- Customers can't be tagged, assigned, imported, or exported, and there are no deals, tasks, or activity history beyond notes.
-- Dependency versions aren't reproducible in Docker: `next` and `eslint-config-next` are `latest`, and the Dockerfile runs `npm install` from `package.json` alone without the lockfile.
-- The app container has no healthcheck, and there is no TLS anywhere.
-- No automated tests beyond lint, a production build, and the CI smoke check.
-- `app.json` and `pages/api/hello.js` are leftovers that nothing here uses.
+- The general API rate limit is per app instance; only login, setup, and password-change throttling is shared through MongoDB. Repeated failed sign-ins can throttle a known account for 15 minutes.
+- `style-src` allows inline styles (needed by Headless UI and Tailwind); scripts are strict.
+- No in-app audit log or session-management screen; security events go to the container logs.
+- No automated tests beyond the security suite, lint, and a production build.
+- `app.json` is a leftover that nothing here uses.
 
 ## Further reading
 
+- [docs/SECURITY.md](docs/SECURITY.md): threat model, every control and the test that proves it, production checklist, and what is not covered.
 - [docs/RABBITMQ.md](docs/RABBITMQ.md): why RabbitMQ is here, what was repaired, and how the publisher works.
