@@ -76,10 +76,14 @@ jobs:
         run: |
           # Ensure a clean environment: the security tests need a fresh install
           docker compose down -v
-          docker compose up -d
 
-          # Wait for the app to report healthy
-          curl --fail --silent --retry 20 --retry-delay 5 --retry-connrefused http://localhost:3000/api/health
+          # --wait blocks until every service's own healthcheck (the app's included)
+          # reports healthy, instead of racing the app's startup.
+          docker compose up -d --wait --wait-timeout 180
+
+          # Confirm from the runner. Docker's port proxy can accept a connection and
+          # then reset it while the app is still starting, so retry every error.
+          curl --fail --silent --show-error --retry 10 --retry-delay 3 --retry-all-errors http://localhost:3000/api/health
 
       - name: Security tests
         run: npm run test:e2e

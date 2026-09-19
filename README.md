@@ -751,7 +751,7 @@ There are no unit tests for the UI. Beyond this suite, verification is lint and 
 3. **Check for unsafe DOM sinks** with `npm run lint:sinks`.
 4. **Audit** production dependencies: `npm audit --omit=dev --audit-level=high`.
 5. **Build the Docker image** with Buildx and the GitHub Actions layer cache.
-6. **Start the Compose stack** from a clean state and wait for the app's healthcheck.
+6. **Start the Compose stack** from a clean state with `docker compose up --wait`, which blocks until every container's healthcheck (the app's included) passes, then confirm `/api/health` from the runner.
 7. **Run the security tests** (`npm run test:e2e`).
 8. On failure, dump `docker compose logs`; always tear the stack down.
 
