@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@headlessui/react": "^1.5.0",
-    "@heroicons/react": "^1.0.5",
+    "@heroicons/react": "^2.2.0",
     "amqplib": "^0.10.5",
     "daisyui": "^2.6.0",
     "mongoose": "^8.9.0",
