@@ -189,7 +189,7 @@ React escapes all rendered text, and the only links built from stored data (a cu
 ## Deployment hardening
 
 - **App container** ([`docker-compose.yaml`](../docker-compose.yaml)): read-only root filesystem (with a `tmpfs` for `/tmp`), all Linux capabilities dropped, `no-new-privileges`, runs as the non-root `nextjs` user, 512 MB memory and 200 process limits, and a Docker `HEALTHCHECK` on `/api/health` (unauthenticated, returns only `{"status":"ok"}`). MongoDB and RabbitMQ keep their defaults because the official images assume them.
-- **Network exposure.** MongoDB and RabbitMQ are published on `127.0.0.1` only. The app connects to MongoDB as a user with `readWrite` on one database, never as root.
+- **Network exposure.** MongoDB, RabbitMQ, and the app are all published on `127.0.0.1` only. The app's address can be changed with `APP_BIND_ADDRESS`; leave it on loopback when a reverse proxy runs on the same host. The app connects to MongoDB as a user with `readWrite` on one database, never as root.
 - **Supply chain.** The Docker build runs `npm ci` against the committed lockfile, and versions are pinned to a major line (`next` is no longer `latest`). Mongoose was upgraded from the end-of-life 6.x to 8.x. CI runs `npm audit --omit=dev --audit-level=high`, and [Dependabot](../.github/dependabot.yml) opens weekly update PRs for npm, Docker, and GitHub Actions.
 - **Secrets.** `.env` files are gitignored and excluded from the Docker build context. Session tokens, passwords, and hashes are redacted from logs. See the README's security notes about an old commit that contains placeholder credentials.
 
@@ -242,7 +242,7 @@ docker compose down -v && docker compose up -d --build   # must be a fresh insta
 npm run test:e2e
 ```
 
-It creates the first admin through `/setup`, so it needs an empty database and refuses to run otherwise. It runs in CI on every push and pull request. Set `BASE_URL` to point it elsewhere, and `E2E_EXPECT_SECURE=true` if that deployment marks cookies `Secure`. If requests to `localhost` hang on Windows (Docker Desktop's IPv6 port forwarding occasionally stops answering), use `BASE_URL=http://127.0.0.1:3000`.
+It creates the first admin through `/setup`, so it needs an empty database and refuses to run otherwise. It runs in CI on every push and pull request. Set `BASE_URL` to point it elsewhere, and `E2E_EXPECT_SECURE=true` if that deployment marks cookies `Secure`.
 
 The upload tests build their hostile files in memory: a JavaScript file renamed `.png`, a Python file, a shebang script named `.txt`, HTML named `.txt`, an SVG with `<script>`, Windows and Linux executables, PNG and GIF polyglots, a macro-enabled Word document, a Word document with a VBA project, one with an embedded `.exe`, and a plain ZIP. Every one must get `415`, and nothing may be stored.
 

@@ -43,7 +43,7 @@ Sign in with your own account, then add, search, edit, and delete customers, kee
 | **Security tests** | `npm run test:e2e` (needs a fresh stack) |
 | **Env template** | [`.env.local.example`](.env.local.example) |
 
-MongoDB and RabbitMQ are bound to `127.0.0.1` only, so they are reachable from your machine but not from the rest of your network. The app itself is published on all interfaces (port 3000) and over plain HTTP; see the [production checklist](docs/SECURITY.md#production-checklist) before exposing it.
+Everything is published on `127.0.0.1` only, the app included, so it is reachable from your machine but not from the rest of your network. To open the app to other devices, set `APP_BIND_ADDRESS=0.0.0.0` in `.env`; it speaks plain HTTP, so read the [production checklist](docs/SECURITY.md#production-checklist) first.
 
 ## Architecture
 
@@ -153,6 +153,7 @@ Both are gitignored, and `.dockerignore` keeps them out of the app image. The te
 | `COOKIE_SECURE` | App | Whether the session cookie carries the `Secure` attribute. Unset means on in production. Compose defaults it to `false` so `http://localhost` works; **set `true` once you serve HTTPS.** |
 | `APP_ORIGIN` | App | Public origin(s) of the app, comma separated (for example `https://crm.example.com`). Requests that change data must come from one of these. Empty means "the request's own host". |
 | `TRUST_PROXY` | App | `true` only when exactly one reverse proxy you control sits in front. It makes the app read the client IP from `X-Forwarded-For` for rate limiting. Default `false`. |
+| `APP_BIND_ADDRESS` | Compose | Host address the app's port 3000 is published on. Default `127.0.0.1` (this machine only). `0.0.0.0` makes it reachable from your network. Behind a reverse proxy on the same host, leave the default. |
 | `MAX_UPLOAD_BYTES` | App | Largest accepted file upload in bytes. Default `10485760` (10 MB). The upload panel in the browser also warns at 10 MB, so if you raise this, raise `MAX_BYTES` in `components/Attachments.js` too. Files are checked in memory, so keep it well under the container's 512 MB limit. |
 | `MAX_FILES_PER_CLIENT` | App | Most files one customer can have. Default `20`. |
 | `MONGODB_URI` | App (host runs only) | Full Mongo connection string. **Required by the app.** Compose builds this itself for the container from the values above, overriding anything in `.env`. |
@@ -185,7 +186,7 @@ Compose starts three services:
 | --- | --- | --- | --- | --- |
 | `mongodb` | `mongodb` | `mongo:6.0` | `127.0.0.1:27017` | Data in the named volume `mongodb_data`. Runs `mongo-init.js` on first boot. Healthchecked with a `ping`. |
 | `rabbitmq` | `rabbitmq` | `rabbitmq:3-management-alpine` | `127.0.0.1:5672` (AMQP), `127.0.0.1:15672` (management UI) | No volume, so queued messages are lost when the container is removed (they survive a plain restart). Healthchecked with `rabbitmq-diagnostics ping`. |
-| `app` | `nextjs_app` | Built from the [`Dockerfile`](Dockerfile) | `0.0.0.0:3000` | Waits for both services above to be healthy. Runs read-only, non-root, with all capabilities dropped, and has its own healthcheck (`/api/health`). |
+| `app` | `nextjs_app` | Built from the [`Dockerfile`](Dockerfile) | `127.0.0.1:3000` (see `APP_BIND_ADDRESS`) | Waits for both services above to be healthy. Runs read-only, non-root, with all capabilities dropped, and has its own healthcheck (`/api/health`). |
 
 Everyday commands:
 
@@ -785,13 +786,13 @@ There are no unit tests for the UI. Beyond this suite, verification is lint and 
 | `npm run test:e2e` says it needs a fresh install | Users already exist. `docker compose down -v && docker compose up -d --build`, then run it again. |
 | `npm run dev` fails with a missing native/SWC binary | `node_modules` was installed on a different OS (for example inside a Linux container). Delete `node_modules` and `.next`, then run `npm install` on your host. |
 | `npm run lint` fails | Run it locally and fix what it reports; CI treats warnings as failures. |
-| `'eslint' is not recognized` on Windows | `node_modules` was installed from Git Bash, which creates symlinks instead of the `.cmd` shims `cmd`/PowerShell need. Run `npm ci` from PowerShell, or run `node node_modules/eslint/bin/eslint.js .` directly. |
+| `'eslint' is not recognized` (or `next` is) on Windows | `node_modules` was installed on Linux, by WSL or a container with the repo mounted. It then has Linux-style `.bin` symlinks instead of the `.cmd` shims Windows needs, and only Linux builds of Next's compiler, so `lint`, `dev`, and `build` all fail. Delete `node_modules` and run `npm ci` from PowerShell or cmd. Pick one side for `npm` commands, Windows or WSL: each reinstall replaces the other's binaries. |
 | `npm run lint:sinks` fails | Code uses `innerHTML`, `document.write`, or a similar API. Render the value through React instead. |
 | An upload fails with *"That file type is not allowed"* | The file's contents aren't one of the [accepted types](#attachments), whatever its name says. Common causes: an SVG, a `.docm`/`.xlsm` (macros), a text file not named `.txt`/`.csv` or not UTF-8, or a password-protected Office file. |
 | An upload fails with `413` | Over `MAX_UPLOAD_BYTES` (10 MB by default). |
 | Words vanished from a name or note after saving | Anything written like an HTML tag (`<like this>`) is removed on save, by design. Plain `<` and `>` are kept. |
 | App logs `csp_violation` | A browser blocked (or, for Trusted Types, reported) something the Content-Security-Policy forbids. After a code change, it usually means a new inline script or style; otherwise it may be an injection attempt. The log line names the directive and the blocked resource. |
-| Requests to `http://localhost:3000` hang but `http://127.0.0.1:3000` works | On Windows, `localhost` resolves to IPv6 first, and Docker Desktop's IPv6 port forwarding occasionally stops answering. Use `127.0.0.1` (for the tests: `BASE_URL=http://127.0.0.1:3000`), or restart Docker Desktop. Browsers fall back to IPv4 by themselves. |
+| Requests to `http://localhost:3000` connect but hang, while `http://127.0.0.1:3000` works | On Windows, `localhost` tries IPv6 (`::1`) first. When the port is published on all interfaces, WSL's localhost relay (`wslrelay`) can claim `[::1]:3000` and forward it into Docker's VM, where the container has no IPv6 route. The default `APP_BIND_ADDRESS=127.0.0.1` avoids this. If you set `0.0.0.0`, or the problem appeared before you updated, check `netstat -ano \| findstr :3000`. If `wslrelay` still owns `[::1]:3000`, quit Docker Desktop, run `wsl --shutdown`, and start it again. |
 | CI fails at Setup Node or `npm ci` with a lockfile error | `package-lock.json` isn't committed, or is out of sync with `package.json`. Run `npm install` and commit the result. |
 | Git warns `LF will be replaced by CRLF` | Harmless line-ending conversion on Windows. |
 
