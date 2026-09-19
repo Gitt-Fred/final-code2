@@ -29,7 +29,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # The Compose stack only lives on this runner for the length of the job, so it
       # gets fresh random credentials every run instead of repository secrets. That
