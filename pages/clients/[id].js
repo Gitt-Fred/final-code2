@@ -9,6 +9,7 @@ import {
   PencilIcon,
   TrashIcon,
 } from '@heroicons/react/outline'
+import Attachments from '../../components/Attachments'
 import Avatar from '../../components/Avatar'
 import ClientForm from '../../components/ClientForm'
 import ClientNews from '../../components/ClientNews'
@@ -134,8 +135,9 @@ export default function ClientDetail({ user }) {
         </section>
 
         <div className="grid gap-6 lg:grid-cols-3">
-          <div className="lg:col-span-2">
+          <div className="space-y-6 lg:col-span-2">
             <Notes clientId={client._id} currentUser={user} />
+            <Attachments clientId={client._id} currentUser={user} />
           </div>
           <ClientNews company={client.company} articles={client.articles} />
         </div>
@@ -151,7 +153,7 @@ export default function ClientDetail({ user }) {
 
         <Modal open={deleting} onClose={() => setDeleting(false)} title="Delete customer">
           <p className="mb-6">
-            Delete <strong>{client.name}</strong>? Their notes will be deleted too. This cannot be undone.
+            Delete <strong>{client.name}</strong>? Their notes and files will be deleted too. This cannot be undone.
           </p>
           <div className="flex justify-end gap-2">
             <button type="button" className="btn btn-ghost" onClick={() => setDeleting(false)} disabled={removing}>

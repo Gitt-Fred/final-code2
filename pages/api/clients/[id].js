@@ -3,6 +3,7 @@ import News from '../../../model/news.js'
 import Note from '../../../model/note.js'
 import { withAuth } from '../../../lib/auth'
 import { isObjectId, notFound, pickClientFields } from '../../../lib/api-helpers'
+import { deleteClientAttachments } from '../../../lib/attachments'
 
 export const config = { api: { bodyParser: { sizeLimit: '50kb' } } }
 
@@ -50,6 +51,7 @@ async function deleteClient(req, res) {
   const deleted = await Client.findByIdAndDelete(id)
   if (!deleted) return notFound(res)
   await Note.deleteMany({ client: id })
+  await deleteClientAttachments(id)
   return res.status(200).json({ success: true, data: {} })
 }
 
