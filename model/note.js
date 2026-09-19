@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { sanitizeMultiline } from '../lib/sanitize'
 
 const NoteSchema = new mongoose.Schema(
   {
@@ -11,7 +12,7 @@ const NoteSchema = new mongoose.Schema(
     text: {
       type: String,
       required: [true, 'Note text is required'],
-      trim: true,
+      set: sanitizeMultiline,
       maxlength: [2000, 'Note is too long (2000 characters max)'],
     },
     // Absent on notes created before authentication existed (admin-only to delete).

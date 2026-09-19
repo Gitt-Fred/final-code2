@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { sanitizeLine, stripInvisible } from '../lib/sanitize'
 
 const UserSchema = new mongoose.Schema(
   {
@@ -6,7 +7,7 @@ const UserSchema = new mongoose.Schema(
       type: String,
       required: [true, 'Email is required'],
       unique: true,
-      trim: true,
+      set: stripInvisible,
       lowercase: true,
       maxlength: [254, 'Email is too long'],
       match: [/^\S+@\S+\.\S+$/, 'Email is invalid'],
@@ -14,7 +15,7 @@ const UserSchema = new mongoose.Schema(
     name: {
       type: String,
       required: [true, 'Name is required'],
-      trim: true,
+      set: sanitizeLine,
       maxlength: [120, 'Name is too long'],
     },
     role: { type: String, enum: ['admin', 'member'], default: 'member' },

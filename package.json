@@ -4,6 +4,7 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "eslint . --max-warnings=0",
+    "lint:sinks": "node scripts/check-sinks.mjs",
     "test:e2e": "node --test tests/security.test.mjs"
   },
   "dependencies": {

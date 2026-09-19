@@ -2,8 +2,13 @@
 // OS-preferred, theme applies without a flash. External file so the CSP can forbid
 // inline scripts.
 try {
+  var saved = localStorage.getItem('theme');
+  // Only the two known themes: storage is never written straight into the DOM.
   var theme =
-    localStorage.getItem('theme') ||
-    (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    saved === 'light' || saved === 'dark'
+      ? saved
+      : window.matchMedia('(prefers-color-scheme: dark)').matches
+        ? 'dark'
+        : 'light';
   document.documentElement.setAttribute('data-theme', theme);
 } catch (e) {}

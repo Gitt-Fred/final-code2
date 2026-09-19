@@ -46,6 +46,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Check for unsafe DOM sinks
+        run: npm run lint:sinks
+
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
 
