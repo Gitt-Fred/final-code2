@@ -746,7 +746,7 @@ There are no unit tests for the UI. Beyond this suite, verification is lint and 
 
 [`.github/workflows/CICD.yml`](.github/workflows/CICD.yml) has one job, `build-test`, run on every push and pull request to `master` (and manually via `workflow_dispatch`). Newer pushes cancel in-progress runs for the same pull request.
 
-1. **Set up Node 20** with npm caching and `npm ci` (exactly the lockfile).
+1. **Generate throwaway credentials** for the CI stack, then **set up Node 20** with npm caching and `npm ci` (exactly the lockfile).
 2. **Lint** with `npm run lint`. Any warning or error fails the build.
 3. **Check for unsafe DOM sinks** with `npm run lint:sinks`.
 4. **Audit** production dependencies: `npm audit --omit=dev --audit-level=high`.
@@ -758,7 +758,7 @@ There are no unit tests for the UI. Beyond this suite, verification is lint and 
 **Requirements:**
 
 - **`package-lock.json` must be committed.** `setup-node`'s npm cache and `npm ci` both need it.
-- **Repository secrets** feed the Compose stack: `MONGO_NAME`, `MONGO_PASS`, `MONGO_DB`, `MONGO_APP_USERNAME`, `MONGO_APP_PASSWORD`, `RABBITMQ_USER`, `RABBITMQ_PASS`, and `LOG_LEVEL`. A missing secret becomes an empty variable and Compose will fail.
+- **No repository secrets are needed.** The Compose stack only exists on the runner for the length of the job, so the workflow generates random MongoDB and RabbitMQ passwords at the start of every run (masked in the logs) and uses fixed CI usernames. That also means CI works on pull requests from forks, which never receive secrets.
 
 [Dependabot](.github/dependabot.yml) opens weekly PRs for npm, Docker, and GitHub Actions updates. There is no deploy job at present; it was removed because the AWS account it targeted no longer exists.
 
